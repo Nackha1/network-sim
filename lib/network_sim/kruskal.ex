@@ -66,16 +66,11 @@ defmodule NetworkSim.Kruskal do
     }
   end
 
-  # -- helpers ---------------------------------------------------------------
+  # -- Helpers ---------------------------------------------------------------
 
   @spec weight_of(meta()) :: weight()
-  defp weight_of(%{weight: w}) when is_number(w), do: w
-
   defp weight_of(m) do
-    case Map.fetch(m, :weight) do
-      {:ok, w} when is_number(w) -> w
-      _ -> :infinity
-    end
+    Map.get(m, :weight, :infinity)
   end
 
   # Disjoint-set: `ds` is {parents_map, ranks_map}

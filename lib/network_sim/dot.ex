@@ -1,16 +1,6 @@
 defmodule NetworkSim.Dot do
   @moduledoc """
   Export the network graph to Graphviz DOT.
-
-  ## Examples
-
-      iex> NetworkSim.Dot.to_dot([:a, :b, :c, :d], [{:a,:b},{:a,:d},{:b,:c},{:d,:c}])
-      ...> |> String.contains?("graph")
-      true
-
-      iex> NetworkSim.Dot.to_dot([:a, :b], [{:a, :b, %{weight: 7}}])
-      ...> |> String.contains?(~s("a" -- "b" [weight=7, label="7"];))
-      true
   """
 
   @doc """
@@ -19,7 +9,6 @@ defmodule NetworkSim.Dot do
   `links` can be any of:
     * `[{u, v}]`
     * `[{u, v, attrs}]`
-    * `[{ {u, v}, attrs }]`
 
   where `attrs` is a map with string or atom keys.
   Known nicety: if `:label`/`"label"` is not provided but `:weight`/`"weight"` is,
@@ -52,11 +41,7 @@ defmodule NetworkSim.Dot do
   end
 
   @doc """
-  Write the DOT file to `path`. Optionally, if Graphviz is installed,
-  set `png: true` to also render a PNG next to it.
-
-  This function has the same inputs as before; it simply respects attributes
-  embedded in `links` as described in `to_dot/2`.
+  Write the DOT file to `path`.
   """
   @spec write_dot(
           [term],
@@ -84,7 +69,7 @@ defmodule NetworkSim.Dot do
 
   # --- helpers ---------------------------------------------------------------
 
-  # Accept: {:u, :v} | {:u, :v, attrs} | {{:u, :v}, attrs}
+  # Accept: {:u, :v} | {:u, :v, attrs}
   # Return: {u, v, attrs_map}
   defp normalize_link({u, v}), do: {u, v, %{}}
   defp normalize_link({u, v, attrs}) when is_map(attrs), do: {u, v, attrs}
