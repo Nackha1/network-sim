@@ -1,48 +1,16 @@
 defmodule KruskalTest do
   use ExUnit.Case, async: true
+
   require Logger
+
   alias NetworkSim.Dot
 
   setup do
-    File.mkdir_p!("tmp/kruskal")
-    :ok
+    File.mkdir_p("tmp/kruskal")
   end
 
-  defp calculate_mst(nodes, links, test_name) do
-    mst = NetworkSim.Kruskal.kruskal(nodes, links)
-    Logger.info("MST for #{test_name}: #{inspect(mst)}")
-
-    style = %{color: "blue", fontcolor: "blue", style: "bold"}
-    new_links = mark_mst_edges(links, mst, style)
-    Dot.write_dot(nodes, new_links, "tmp/kruskal/#{test_name}.dot", format: "svg", engine: "dot")
-  end
-
-  @doc """
-  Marks edges present in the given MST with a style.
-
-  ## Parameters
-    * `links` - a list of `{u, v, attrs}` tuples.
-    * `mst` - a map returned by your MST algorithm (`%{edges: [...], weight: total_weight}`).
-    * `style` - a map of attributes to merge into the MST edges, e.g. `%{color: "blue", penwidth: 2}`.
-
-  Returns the updated list of links with MST edges having the given style.
-  """
-  @spec mark_mst_edges([{term, term, map}], %{edges: list, weight: number}, map) :: [
-          {term, term, map}
-        ]
-  def mark_mst_edges(links, %{edges: mst_edges}, style) when is_map(style) do
-    mst_set =
-      mst_edges
-      |> Enum.map(fn {u, v, _attrs} -> MapSet.new([u, v]) end)
-      |> MapSet.new()
-
-    Enum.map(links, fn {u, v, attrs} ->
-      if MapSet.member?(mst_set, MapSet.new([u, v])) do
-        {u, v, Map.merge(attrs, style)}
-      else
-        {u, v, attrs}
-      end
-    end)
+  defp show_custom_mst(nodes, links, test_name) do
+    Dot.show_mst(nodes, links, "tmp/kruskal/#{test_name}")
   end
 
   test "basic triangle" do
@@ -55,7 +23,7 @@ defmodule KruskalTest do
     ]
 
     test_name = "triangle"
-    calculate_mst(nodes, links, test_name)
+    show_custom_mst(nodes, links, test_name)
   end
 
   test "square with diagonals" do
@@ -71,7 +39,7 @@ defmodule KruskalTest do
     ]
 
     test_name = "square"
-    calculate_mst(nodes, links, test_name)
+    show_custom_mst(nodes, links, test_name)
   end
 
   test "star topology" do
@@ -88,7 +56,7 @@ defmodule KruskalTest do
     ]
 
     test_name = "star"
-    calculate_mst(nodes, links, test_name)
+    show_custom_mst(nodes, links, test_name)
   end
 
   test "disconnected graph" do
@@ -102,7 +70,7 @@ defmodule KruskalTest do
     ]
 
     test_name = "disconnected"
-    calculate_mst(nodes, links, test_name)
+    show_custom_mst(nodes, links, test_name)
   end
 
   test "dense graph" do
@@ -119,6 +87,6 @@ defmodule KruskalTest do
     ]
 
     test_name = "dense"
-    calculate_mst(nodes, links, test_name)
+    show_custom_mst(nodes, links, test_name)
   end
 end

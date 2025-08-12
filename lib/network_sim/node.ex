@@ -12,7 +12,7 @@ defmodule NetworkSim.Node do
   require Logger
 
   @typedoc """
-  User-defined node identifier (string, integer, etc.)
+  User-defined node identifier
   """
   @type node_id :: term()
 
@@ -21,16 +21,22 @@ defmodule NetworkSim.Node do
   """
   @type state :: %{
           id: node_id(),
-          inbox: [{node_id(), any()}]
+          inbox: [{node_id(), any()}],
+          protocol_module: module(),
+          protocol_state: any()
         }
 
   ## Public API
 
   @doc """
-  Start a node under the DynamicSupervisor and register it
+  Start a node, optionally specifying a protocol:
+
+      NetworkSim.Node.start_link(:a, protocol: {MyProto, proto_opts})
+
+  If omitted, uses the app-level default protocol (see below).
   """
-  def start_link(id) do
-    GenServer.start_link(__MODULE__, id, name: via(id))
+  def start_link(id, opts \\ []) do
+    GenServer.start_link(__MODULE__, {id, opts}, name: via(id))
   end
 
   @doc """
@@ -49,10 +55,22 @@ defmodule NetworkSim.Node do
   ## GenServer callbacks
 
   @impl true
-  def init(id) do
+  def init({id, opts}) do
     Logger.metadata(node_id: inspect(id))
+
+    {proto_mod, proto_opts} =
+      case Keyword.get(opts, :protocol) do
+        {mod, p_opts} when is_atom(mod) ->
+          {mod, p_opts}
+
+        nil ->
+          {NetworkSim.Protocol.PingPong, %{}}
+      end
+
+    proto_state = proto_mod.init(id, proto_opts)
+
     Logger.info("Node started", module: __MODULE__)
-    {:ok, %{id: id, inbox: []}}
+    {:ok, %{id: id, inbox: [], proto_mod: proto_mod, proto_state: proto_state}}
   end
 
   @impl true
@@ -66,11 +84,25 @@ defmodule NetworkSim.Node do
   end
 
   @impl true
-  def handle_cast({:deliver, from, payload}, %{id: _id, inbox: inbox} = state) do
+  def handle_cast(
+        {:deliver, from, payload},
+        %{id: id, inbox: inbox, proto_mod: pm, proto_state: ps} = state
+      ) do
     Logger.debug("Received from=#{inspect(from)} payload=#{inspect(payload)}",
       module: __MODULE__
     )
 
-    {:noreply, %{state | inbox: [{from, payload} | inbox]}}
+    # Always record deliveries (handy for tests/inspection)
+    new_state = %{state | inbox: [{from, payload} | inbox]}
+
+    case pm.handle_message(from, payload, ps) do
+      {:noreply, ps2} ->
+        {:noreply, %{new_state | proto_state: ps2}}
+
+      {:reply, reply_payload, ps2} ->
+        # Reply goes back through the router so topology rules still apply.
+        _ = NetworkSim.send(id, from, reply_payload)
+        {:noreply, %{new_state | proto_state: ps2}}
+    end
   end
 end

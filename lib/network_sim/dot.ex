@@ -3,6 +3,10 @@ defmodule NetworkSim.Dot do
   Export the network graph to Graphviz DOT.
   """
 
+  require Logger
+
+  alias NetworkSim.Kruskal
+
   @doc """
   Return a Graphviz DOT string for an *undirected* graph.
 
@@ -38,6 +42,43 @@ defmodule NetworkSim.Dot do
     #{edge_lines}
     }
     """
+  end
+
+  @doc """
+  Marks edges present in the given MST with a style.
+
+  ## Parameters
+    * `links` - a list of `{u, v, attrs}` tuples.
+    * `mst` - a map returned by your MST algorithm (`%{edges: [...], weight: total_weight}`).
+    * `style` - a map of attributes to merge into the MST edges, e.g. `%{color: "blue", penwidth: 2}`.
+
+  Returns the updated list of links with MST edges having the given style.
+  """
+  @spec mark_mst_edges([{term, term, map}], %{edges: list, weight: number}, map) :: [
+          {term, term, map}
+        ]
+  def mark_mst_edges(links, %{edges: mst_edges}, style) when is_map(style) do
+    mst_set =
+      mst_edges
+      |> Enum.map(fn {u, v, _attrs} -> MapSet.new([u, v]) end)
+      |> MapSet.new()
+
+    Enum.map(links, fn {u, v, attrs} ->
+      if MapSet.member?(mst_set, MapSet.new([u, v])) do
+        {u, v, Map.merge(attrs, style)}
+      else
+        {u, v, attrs}
+      end
+    end)
+  end
+
+  def show_mst(nodes, links, file_name) do
+    mst = Kruskal.kruskal(nodes, links)
+    Logger.info("MST for #{file_name}: #{inspect(mst)}")
+
+    style = %{color: "blue", fontcolor: "blue", style: "bold"}
+    new_links = mark_mst_edges(links, mst, style)
+    write_dot(nodes, new_links, "#{file_name}.dot", format: "svg", engine: "dot")
   end
 
   @doc """
@@ -92,15 +133,15 @@ defmodule NetworkSim.Dot do
   end
 
   defp maybe_autofill_label(attrs) do
-    has_label? = Map.has_key?(attrs, :label) or Map.has_key?(attrs, "label")
-    weight = Map.get(attrs, :weight) || Map.get(attrs, "weight")
+    has_label? = Map.has_key?(attrs, :label)
+    weight = Map.get(attrs, :weight)
 
     cond do
       has_label? or is_nil(weight) ->
         attrs
 
       true ->
-        Map.put(attrs, :label, weight)
+        attrs |> Map.delete(:weight) |> Map.put(:label, weight)
     end
   end
 

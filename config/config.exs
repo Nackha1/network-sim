@@ -7,9 +7,6 @@ Config.import_config("#{Mix.env()}.exs")
 # # Show debug logs while running tests
 # config :logger, level: :debug
 
-# config :logger, :console,
-#   format: "$time $metadata[$level] $message\n",
-#   metadata: [:module, :node_id],
-#   compile_time_purge_matching: [
-#     [level_lower_than: :debug]
-#   ]
+config :logger, :console,
+  format: "\n$time $metadata[$level] $message\n",
+  metadata: [:node_id]
