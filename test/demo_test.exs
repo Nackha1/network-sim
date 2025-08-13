@@ -1,8 +1,9 @@
 defmodule DemoTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   require Logger
 
+  alias NetworkSim.Kruskal
   alias NetworkSim.Router
   alias NetworkSim.Dot
 
@@ -20,14 +21,19 @@ defmodule DemoTest do
       |         |
       └—— d ——──┘
   """
-  test "sanity demo with bidirectional links and runtime (de)activation" do
-    nodes = [:a, :b, :c, :d]
+  test "ping_pong protocol test" do
+    nodes = [
+      {:a, NetworkSim.Protocol.PingPong, []},
+      {:b, NetworkSim.Protocol.PingPong, []},
+      {:c, NetworkSim.Protocol.PingPong, []},
+      {:d, NetworkSim.Protocol.PingPong, []}
+    ]
 
     links = [
-      {:a, :b, %{weight: 2}},
-      {:a, :d, %{weight: 1}},
-      {:b, :c, %{weight: 3}},
-      {:c, :d, %{weight: 1}}
+      {:a, :b, %{weight: 1}},
+      {:a, :d, %{weight: 4}},
+      {:b, :c, %{weight: 2}},
+      {:c, :d, %{weight: 3}}
     ]
 
     # boot the network (expects your app exposes something like this)
@@ -73,6 +79,81 @@ defmodule DemoTest do
     assert {:error, :not_neighbors} == NetworkSim.send(:a, :c, {:ping, 7})
 
     test_name = "graph_1"
-    show_custom_mst(nodes, links, test_name)
+    new_nodes = Enum.map(nodes, &elem(&1, 0))
+    show_custom_mst(new_nodes, links, test_name)
+
+    NetworkSim.stop_network()
   end
+
+  test "echo protocol test" do
+    nodes = [
+      {:a, NetworkSim.Protocol.Echo, []},
+      {:b, NetworkSim.Protocol.Echo, []}
+    ]
+
+    links = [
+      {:a, :b}
+    ]
+
+    NetworkSim.start_network(nodes, links)
+
+    NetworkSim.send(:a, :b, {:echo, "Hello, World!"})
+
+    Process.sleep(10)
+    assert Enum.member?(NetworkSim.inbox(:a), {:b, {:reply, "HELLO, WORLD!"}})
+
+    NetworkSim.stop_network()
+  end
+
+  test "event_listener protocol test" do
+    nodes = [
+      {:a, NetworkSim.Protocol.EventListener, []},
+      {:b, NetworkSim.Protocol.EventListener, []},
+      {:c, NetworkSim.Protocol.EventListener, []}
+    ]
+
+    links = [
+      {:a, :b},
+      {:a, :c},
+      {:b, :c}
+    ]
+
+    NetworkSim.start_network(nodes, links)
+
+    NetworkSim.disable_link(:a, :b)
+
+    Process.sleep(10)
+
+    assert Enum.any?(NetworkSim.inbox(:a), fn
+             {_, {:router_link_down, :b, _}} -> true
+             _ -> false
+           end)
+
+    assert Enum.any?(NetworkSim.inbox(:b), fn
+             {_, {:router_link_down, :a, _}} -> true
+             _ -> false
+           end)
+
+    assert Enum.empty?(NetworkSim.inbox(:c))
+
+    NetworkSim.disable_link(:a, :b)
+    NetworkSim.enable_link(:a, :b)
+
+    Process.sleep(10)
+    NetworkSim.stop_network()
+  end
+
+  # test "dynamic MST protocol" do
+  #   nodes = [:a, :b, :c, :d]
+
+  #   links = [
+  #     {:a, :b, %{weight: 1}},
+  #     {:a, :d, %{weight: 4}},
+  #     {:b, :c, %{weight: 2}},
+  #     {:c, :d, %{weight: 3}}
+  #   ]
+
+  #   NetworkSim.start_network(nodes, links)
+  #   mst = Kruskal.rooted_forest(Kruskal.kruskal(nodes, links).edges)
+  # end
 end

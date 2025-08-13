@@ -69,7 +69,10 @@ defmodule NetworkSim.Node do
 
     proto_state = proto_mod.init(id, proto_opts)
 
-    Logger.info("Node started", module: __MODULE__)
+    Logger.info("Node started with {#{inspect(proto_mod)}, #{inspect(proto_opts)}}",
+      module: __MODULE__
+    )
+
     {:ok, %{id: id, inbox: [], proto_mod: proto_mod, proto_state: proto_state}}
   end
 

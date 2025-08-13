@@ -8,5 +8,5 @@ Config.import_config("#{Mix.env()}.exs")
 # config :logger, level: :debug
 
 config :logger, :console,
-  format: "\n$time $metadata[$level] $message\n",
+  # format: "\n$time $metadata[$level] $message\n",
   metadata: [:node_id]

@@ -13,33 +13,14 @@ defmodule NetworkSim.Router do
   use GenServer
   require Logger
 
-  @typedoc """
-  User-defined node identifier (string, integer, atom, etc.).
-  """
   @type node_id :: term()
+  @type graph :: %{optional(node_id()) => MapSet.t(node_id())}
+  @type edge_key :: {node_id(), node_id()}
+  @type edge_attrs :: %{optional(edge_key()) => map()}
 
-  @typedoc """
-  Symmetric adjacency: for every `{u, v}` edge, both `u` includes `v`
-  **and** `v` includes `u`.
-  """
-  @type adjacency :: %{node_id() => MapSet.t(node_id())}
-
-  @typedoc """
-  Undirected edge key stored as `{min(u,v), max(u,v)}`.
-  """
-  @type uedge :: {node_id(), node_id()}
-
-  @typedoc """
-    Arbitrary edge attributes keyed by undirected edge.
-  """
-  @type edge_attrs :: %{optional(uedge()) => term()}
-
-  @typedoc """
-  Internal state.
-  """
   @type state :: %{
-          adjacency: adjacency(),
-          disabled: MapSet.t(uedge()),
+          graph: graph(),
+          disabled: MapSet.t(edge_key()),
           attrs: edge_attrs()
         }
 
@@ -48,22 +29,28 @@ defmodule NetworkSim.Router do
   @doc """
   Start the router.
   """
+  @spec start_link(term()) :: {:ok, pid()}
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
   @doc """
-    Load or replace the current graph (no attributes).
+  Replace the current graph and edge attributes.
+
+  Inputs must already be normalized:
+    * `graph`: `%{id => MapSet.neighbors}`
+    * `attrs`: `%{{min,max} => map}`
   """
-  @spec load_graph(%{optional(node_id()) => [node_id()]}) :: :ok
-  def load_graph(graph_spec), do: GenServer.call(__MODULE__, {:load_graph, graph_spec, %{}})
+  @spec load_graph(graph(), edge_attrs()) :: :ok
+  def load_graph(graph, attrs \\ %{}),
+    do: GenServer.call(__MODULE__, {:load_graph, graph, attrs})
 
   @doc """
     Load or replace the current graph **and** set per-edge attributes.
   """
-  @spec load_graph(%{optional(node_id()) => [node_id()]}, edge_attrs()) :: :ok
-  def load_graph(graph_spec, attrs),
-    do: GenServer.call(__MODULE__, {:load_graph, graph_spec, attrs})
+  @spec load_graph(%{optional(node_id()) => [node_id()]}, edge_attrs(), module()) :: :ok
+  def load_graph(graph_spec, attrs, protocol),
+    do: GenServer.call(__MODULE__, {:load_graph, graph_spec, attrs, protocol})
 
   @doc """
     Read attributes for an undirected edge `{a,b}`.
@@ -112,71 +99,83 @@ defmodule NetworkSim.Router do
 
   @impl true
   def init(_) do
-    {:ok, %{adjacency: %{}, disabled: MapSet.new(), attrs: %{}}}
+    {:ok, %{graph: %{}, disabled: MapSet.new(), attrs: %{}}}
   end
 
   @impl true
-  def handle_call({:load_graph, graph_spec, raw_attrs}, _from, _state) do
-    {adj, nodes} = normalize_graph(graph_spec)
-
-    Enum.each(nodes, &ensure_node/1)
-
-    # Normalize attribute keys to undirected, and (optionally) drop attrs
-    # that don’t correspond to an existing edge in `adj`.
-    edge_keys = MapSet.new(all_edges(adj))
-
-    attrs =
-      raw_attrs
-      |> Enum.map(fn
-        {{a, b}, v} -> {undirected(a, b), v}
-        other -> other
-      end)
-      |> Enum.filter(fn {k, _} -> MapSet.member?(edge_keys, k) end)
-      |> Map.new()
-
-    Logger.info("Graph loaded with #{map_size(adj)} nodes", module: __MODULE__)
-    {:reply, :ok, %{adjacency: adj, disabled: MapSet.new(), attrs: attrs}}
+  def handle_call({:load_graph, graph, attrs}, _from, _state) do
+    Logger.info("Graph loaded with #{map_size(graph)} nodes")
+    {:reply, :ok, %{graph: graph, disabled: MapSet.new(), attrs: attrs}}
   end
 
   def handle_call({:edge_attr, e}, _from, %{attrs: attrs} = state) do
     {:reply, Map.get(attrs, e), state}
   end
 
-  def handle_call({:neighbors, node_id}, _from, %{adjacency: adj} = state) do
-    {:reply, Map.get(adj, node_id, MapSet.new()), state}
+  def handle_call({:neighbors, node_id}, _from, %{graph: g} = state) do
+    {:reply, Map.get(g, node_id, MapSet.new()), state}
   end
 
-  def handle_call({:disable, {a, b}}, _from, %{adjacency: adj, disabled: dis} = state) do
-    # Only disable if the edge exists in the graph
-    dis2 =
-      if MapSet.member?(Map.get(adj, a, MapSet.new()), b) do
-        MapSet.put(dis, {a, b})
+  def handle_call({:disable, e}, _from, %{graph: g, disabled: dis, attrs: attrs} = state) do
+    {a, b} = e
+
+    # Only act if edge is in the topology
+    if edge_exists?(g, a, b) do
+      if MapSet.member?(dis, e) do
+        # already disabled
+        {:reply, :ok, state}
       else
-        dis
-      end
+        dis2 = MapSet.put(dis, e)
+        meta = %{edge: e, attrs: Map.get(attrs, e)}
 
-    {:reply, :ok, %{state | disabled: dis2}}
+        notify(a, {:router_link_down, b, meta})
+        notify(b, {:router_link_down, a, meta})
+
+        {:reply, :ok, %{state | disabled: dis2}}
+      end
+    else
+      {:reply, :ok, state}
+    end
   end
 
-  def handle_call({:enable, e}, _from, %{disabled: dis} = state) do
-    {:reply, :ok, %{state | disabled: MapSet.delete(dis, e)}}
+  def handle_call({:enable, e}, _from, %{graph: g, disabled: dis, attrs: attrs} = state) do
+    {a, b} = e
+
+    # Only act if edge is in the topology
+    if edge_exists?(g, a, b) do
+      if MapSet.member?(dis, e) do
+        dis2 = MapSet.delete(dis, e)
+        meta = %{edge: e, attrs: Map.get(attrs, e)}
+
+        notify(a, {:router_link_up, b, meta})
+        notify(b, {:router_link_up, a, meta})
+
+        {:reply, :ok, %{state | disabled: dis2}}
+      else
+        # already enabled
+        {:reply, :ok, state}
+      end
+    else
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call({:link_enabled?, e}, _from, %{disabled: dis} = state) do
     {:reply, not MapSet.member?(dis, e), state}
   end
 
-  def handle_call({:send, from, to, payload}, _from, %{adjacency: adj, disabled: dis} = state) do
-    e = undirected(from, to)
-
+  def handle_call({:send, from, to, payload}, _from, %{graph: g, disabled: dis} = state) do
     cond do
-      not Map.has_key?(adj, from) ->
-        {:reply, {:error, :unknown_sender}, state}
+      from == to ->
+        {:reply, {:error, :same_node}, state}
 
-      not MapSet.member?(Map.get(adj, from, MapSet.new()), to) ->
+      not Map.has_key?(g, from) or not Map.has_key?(g, to) ->
+        {:reply, {:error, :unknown_node}, state}
+
+      not MapSet.member?(Map.get(g, from), to) ->
         {:reply, {:error, :not_neighbors}, state}
 
-      MapSet.member?(dis, e) ->
+      MapSet.member?(dis, undirected(from, to)) ->
         {:reply, {:error, :link_disabled}, state}
 
       true ->
@@ -186,7 +185,7 @@ defmodule NetworkSim.Router do
             {:reply, :ok, state}
 
           [] ->
-            {:reply, {:error, :unknown_receiver}, state}
+            {:reply, {:error, :unknown_receiver_pid}, state}
         end
     end
   end
@@ -194,65 +193,21 @@ defmodule NetworkSim.Router do
   ## Helpers
 
   # Normalize an arbitrary pair to an undirected edge key
-  @spec undirected(node_id(), node_id()) :: uedge()
-  defp undirected(a, b) do
-    if a <= b, do: {a, b}, else: {b, a}
+  @spec undirected(node_id(), node_id()) :: edge_key()
+  defp undirected(a, b), do: if(a <= b, do: {a, b}, else: {b, a})
+
+  defp edge_exists?(g, a, b) do
+    case Map.get(g, a) do
+      nil -> false
+      ns -> MapSet.member?(ns, b)
+    end
   end
 
-  # Collect all undirected edges present in adjacency
-  defp all_edges(adj) do
-    adj
-    |> Enum.flat_map(fn {u, vs} ->
-      vs
-      |> MapSet.to_list()
-      # keep one direction (u < v)
-      |> Enum.filter(&(&1 > u))
-      |> Enum.map(&{u, &1})
-    end)
-  end
-
-  # Make adjacency symmetric and collect all nodes
-  defp normalize_graph(graph_spec) when is_map(graph_spec) do
-    # First pass: coerce values to sets
-    adj0 =
-      graph_spec
-      |> Enum.map(fn {id, neighs} -> {id, MapSet.new(List.wrap(neighs))} end)
-      |> Map.new()
-
-    # Second pass: symmetrize (for every u->v, add v->u)
-    adj1 =
-      Enum.reduce(adj0, adj0, fn {u, vs}, acc ->
-        Enum.reduce(vs, acc, fn v, acc2 ->
-          Map.update(acc2, v, MapSet.new([u]), &MapSet.put(&1, u))
-        end)
-      end)
-
-    nodes =
-      adj1
-      |> Map.keys()
-      |> MapSet.new()
-      |> MapSet.union(adj1 |> Map.values() |> Enum.reduce(MapSet.new(), &MapSet.union/2))
-      |> MapSet.to_list()
-
-    {adj1, nodes}
-  end
-
-  defp ensure_node(id) do
-    name = NetworkSim.Node.via(id)
-
-    case GenServer.whereis(name) do
-      nil ->
-        spec = {NetworkSim.Node, id}
-
-        case DynamicSupervisor.start_child(NetworkSim.NodeSupervisor, spec) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, :already_present} -> :ok
-          other -> other
-        end
-
-      _pid ->
-        :ok
+  # Deliver a control notification to a node `id` if it is running.
+  defp notify(id, msg) do
+    case Registry.lookup(NetworkSim.Registry, {:node, id}) do
+      [{pid, _}] -> GenServer.cast(pid, {:deliver, :router, msg})
+      [] -> :ok
     end
   end
 end

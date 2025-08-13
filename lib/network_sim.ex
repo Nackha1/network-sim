@@ -18,7 +18,10 @@ defmodule NetworkSim do
   @typedoc """
   An undirected link; may carry an attribute term in 3rd position.
   """
-  @type link :: {node_id(), node_id()} | {node_id(), node_id(), term()}
+  @type link :: {node_id(), node_id()} | {node_id(), node_id(), map()}
+
+  @typedoc "Per-node protocol spec"
+  @type node_spec :: {node_id(), module(), keyword()}
 
   @typedoc """
   Adjacency as a *list-based* map: each node maps to a (deduplicated) list
@@ -31,56 +34,44 @@ defmodule NetworkSim do
   # ================
 
   @doc """
-  Load a graph specification: `%{id => [neighbors...]}`.
+  Start the network.
 
-  The graph is made **undirected** automatically by the router; any missing reverse
-  edges are added, and disabled-link state is cleared.
+  * `node_specs`: `[{id, ProtocolModule, opts}]`
+  * `links`: `[{u, v}]` or `[{u, v, %{...attrs...}}]`
+
+  This function:
+    1) Ensures one `NetworkSim.Node` per `id`, started with `{ProtocolModule, opts}`
+    2) Builds an **undirected** adjacency as `%{id => MapSet.neighbors}`
+    3) Builds an edge-attributes map `%{{min,max} => attrs}`
+    4) Calls `Router.load_graph/2` with the normalized data
   """
-  @spec load_graph(%{optional(node_id()) => [node_id()]}) :: :ok
-  def load_graph(graph_spec), do: Router.load_graph(graph_spec)
+  @spec start_network([node_spec()], [link()]) :: :ok | {:error, term()}
+  def start_network(node_specs, links) do
+    # 1) start nodes with their protocol
+    Enum.each(node_specs, fn {id, proto_mod, proto_opts} ->
+      _ = ensure_node(id, proto_mod, proto_opts)
+    end)
 
-  @doc """
-  Start the network given `nodes` and undirected `links`.
+    # 2) normalized adjacency (MapSet-based)
+    graph = graph_from_links(Enum.map(node_specs, &elem(&1, 0)), links)
 
-  Each link may optionally carry attributes in a third element:
-
-    * `{:a, :b}`                 → no attributes
-    * `{:a, :b, %{weight: 10}}` → attributes (protocol-specific)
-
-  Attributes are stored by the router keyed on the undirected edge `{min,max}`.
-  The simulator itself remains agnostic.
-
-  ## Examples
-
-      iex> nodes = [:a, :b, :c]
-      iex> links = [{:a, :b, %{weight: 1}}, {:b, :c, %{weight: 2}}]
-      iex> NetworkSim.start_network(nodes, links)
-      :ok
-  """
-  @spec start_network([node_id()], [link()]) :: :ok | {:error, term()}
-  def start_network(nodes, links) do
-    graph = graph_from_lists(nodes, links)
+    # 3) normalized edge attrs
     attrs = edge_attrs_from_links(links)
+
+    # 4) tell the Router (already normalized; no normalization inside Router)
     Router.load_graph(graph, attrs)
   end
 
   @doc """
-  Stop the network by terminating all node processes and clearing topology.
-
-  This:
-    * terminates all children under `NetworkSim.NodeSupervisor`
-    * resets the router to an empty graph
+  Stop all node processes and clear the Router’s graph.
   """
   @spec stop_network() :: :ok
   def stop_network do
-    # Terminate all node processes supervised dynamically
     for {_, pid, _, _} <- DynamicSupervisor.which_children(NetworkSim.NodeSupervisor) do
-      # Ignore errors if a child already exited
       _ = DynamicSupervisor.terminate_child(NetworkSim.NodeSupervisor, pid)
     end
 
-    # Clear router state (no nodes, no edges)
-    :ok = Router.load_graph(%{})
+    Router.load_graph(%{}, %{})
     :ok
   end
 
@@ -144,81 +135,74 @@ defmodule NetworkSim do
   #  Helpers
   # =========
 
-  @doc """
-  Build a **list-based** adjacency map from `nodes` and undirected `links`.
+  # Ensure a node process exists with its protocol+opts. If already running,
+  # ask it to update its protocol (no restart required).
+  @spec ensure_node(node_id(), module(), keyword()) :: {:ok, pid()} | {:error, term()}
+  defp ensure_node(id, protocol_mod, protocol_opts) do
+    case Registry.lookup(NetworkSim.Registry, {:node, id}) do
+      [{pid, _}] ->
+        send(pid, {:router_set_protocol, protocol_mod, protocol_opts})
+        {:ok, pid}
 
-  The output is a map `%{node => [neighbors...]}` with these properties:
+      [] ->
+        spec = %{
+          id: {:node, id},
+          start: {NetworkSim.Node, :start_link, [id, [protocol: {protocol_mod, protocol_opts}]]},
+          restart: :transient,
+          type: :worker
+        }
 
-    * **Symmetric:** every `{:u, :v}` adds `v` to `u`'s list and `u` to `v`'s list.
-    * **No self-loops:** any `{:u, :u}` is ignored.
-    * **Deduplicated:** neighbor lists contain unique entries.
-    * **Total:** all nodes appear as keys, even if isolated.
-    * **Order-free:** list order is unspecified (do not rely on it).
-
-  This function is intentionally “dumb & fast” at the boundary:
-  it does not use `MapSet`s; the `Router` still normalizes and stores
-  neighbors as sets internally.
-
-  ## Examples
-
-      iex> NetworkSim.graph_from_lists([:a, :b, :c], [{:a, :b}, {:b, :c}])
-      %{
-        a: [:b],
-        b: [:a, :c],
-        c: [:b]
-      }
-
-      iex> # isolated nodes still appear:
-      ...> NetworkSim.graph_from_lists([:x, :y], [])
-      %{x: [], y: []}
-  """
-  @spec graph_from_lists([node_id()], [link()]) :: list_adjacency()
-  def graph_from_lists(nodes, links) do
-    links = Enum.map(links, &normalize_link/1)
-
-    # Include any endpoint that appears only in `links` but not in `nodes`.
-    ids =
-      nodes
-      |> Enum.uniq()
-      |> Kernel.++(Enum.flat_map(links, fn {u, v, _attr} -> [u, v] end))
-      |> Enum.uniq()
-
-    # Start with every node present and no neighbors.
-    base = Map.new(ids, &{&1, []})
-
-    # Accumulate undirected edges (skip self-loops).
-    adj =
-      Enum.reduce(links, base, fn
-        {u, v, _attr}, acc when u == v ->
-          acc
-
-        {u, v, _attr}, acc ->
-          acc
-          |> Map.update!(u, fn ns -> [v | ns] end)
-          |> Map.update!(v, fn ns -> [u | ns] end)
-      end)
-
-    # Deduplicate and drop accidental self-entries if any slipped in.
-    for {id, ns} <- adj, into: %{} do
-      {id, ns |> Enum.uniq() |> Enum.reject(&(&1 == id))}
+        DynamicSupervisor.start_child(NetworkSim.NodeSupervisor, spec)
     end
   end
 
-  # Build the attribute map from the links list.
-  # Keys are normalized undirected tuples `{min,max}`.
-  @spec edge_attrs_from_links([link()]) :: %{optional({node_id(), node_id()}) => term()}
-  defp edge_attrs_from_links(links) do
-    links
-    |> Enum.reduce(%{}, fn
-      {u, v, attr}, acc when u != v ->
-        k = if u <= v, do: {u, v}, else: {v, u}
-        Map.put(acc, k, attr)
+  # Build **undirected** adjacency as %{id => MapSet.neighbors}
+  @spec graph_from_links([node_id()], [link()]) :: %{optional(node_id()) => MapSet.t(node_id())}
+  defp graph_from_links(nodes, links) do
+    ids =
+      nodes
+      |> Enum.uniq()
+      |> Kernel.++(
+        Enum.flat_map(links, fn
+          {u, v} -> [u, v]
+          {u, v, _} -> [u, v]
+        end)
+      )
+      |> Enum.uniq()
 
-      _other, acc ->
+    base = Map.new(ids, &{&1, MapSet.new()})
+
+    Enum.reduce(links, base, fn
+      {u, v}, acc when u != v ->
+        acc
+        |> Map.update!(u, &MapSet.put(&1, v))
+        |> Map.update!(v, &MapSet.put(&1, u))
+
+      {u, v, _attrs}, acc when u != v ->
+        acc
+        |> Map.update!(u, &MapSet.put(&1, v))
+        |> Map.update!(v, &MapSet.put(&1, u))
+
+      _self_loop, acc ->
         acc
     end)
   end
 
-  defp normalize_link({u, v}), do: {u, v, %{}}
-  defp normalize_link({u, v, attrs}) when is_map(attrs), do: {u, v, attrs}
+  # Edge attributes as %{{min,max} => attrs} (attrs default to %{})
+  @spec edge_attrs_from_links([link()]) :: %{{node_id(), node_id()} => map()}
+  defp edge_attrs_from_links(links) do
+    Enum.reduce(links, %{}, fn
+      {u, v, attrs}, acc when u != v and is_map(attrs) ->
+        Map.put(acc, undirected(u, v), attrs)
+
+      {_u, _v}, acc ->
+        acc
+
+      _self, acc ->
+        acc
+    end)
+  end
+
+  @spec undirected(node_id(), node_id()) :: {node_id(), node_id()}
+  defp undirected(a, b), do: if(a <= b, do: {a, b}, else: {b, a})
 end
