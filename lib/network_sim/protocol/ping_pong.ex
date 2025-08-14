@@ -11,6 +11,7 @@ defmodule NetworkSim.Protocol.PingPong do
     {:reply, {:pong, ref}, state}
   end
 
+  @impl true
   def handle_message(_from, _other, state) do
     {:noreply, state}
   end

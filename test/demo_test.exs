@@ -1,5 +1,5 @@
 defmodule DemoTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   require Logger
 
@@ -143,17 +143,23 @@ defmodule DemoTest do
     NetworkSim.stop_network()
   end
 
-  # test "dynamic MST protocol" do
-  #   nodes = [:a, :b, :c, :d]
+  test "dynamic MST: split, heal, and recovery" do
+    nodes = [
+      {:a, NetworkSim.Protocol.DynamicMST, %{parent: nil, children: [:b, :d]}},
+      {:b, NetworkSim.Protocol.DynamicMST, %{parent: :a, children: [:c]}},
+      {:c, NetworkSim.Protocol.DynamicMST, %{parent: :b, children: []}},
+      {:d, NetworkSim.Protocol.DynamicMST, %{parent: :a, children: []}}
+    ]
 
-  #   links = [
-  #     {:a, :b, %{weight: 1}},
-  #     {:a, :d, %{weight: 4}},
-  #     {:b, :c, %{weight: 2}},
-  #     {:c, :d, %{weight: 3}}
-  #   ]
+    links = [
+      {:a, :b, %{weight: 1}},
+      {:b, :c, %{weight: 2}},
+      {:a, :d, %{weight: 4}},
+      {:c, :d, %{weight: 3}}
+    ]
 
-  #   NetworkSim.start_network(nodes, links)
-  #   mst = Kruskal.rooted_forest(Kruskal.kruskal(nodes, links).edges)
-  # end
+    NetworkSim.start_network(nodes, links)
+
+    NetworkSim.Router.disable_link(:a, :b)
+  end
 end

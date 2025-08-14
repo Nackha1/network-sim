@@ -11,6 +11,7 @@ defmodule NetworkSim.Protocol.Echo do
     {:reply, {:reply, String.upcase(str)}, state}
   end
 
+  @impl true
   def handle_message(_from, _other, state) do
     {:noreply, state}
   end

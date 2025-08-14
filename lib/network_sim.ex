@@ -47,19 +47,19 @@ defmodule NetworkSim do
   """
   @spec start_network([node_spec()], [link()]) :: :ok | {:error, term()}
   def start_network(node_specs, links) do
-    # 1) start nodes with their protocol
-    Enum.each(node_specs, fn {id, proto_mod, proto_opts} ->
-      _ = ensure_node(id, proto_mod, proto_opts)
-    end)
-
-    # 2) normalized adjacency (MapSet-based)
+    # 1) normalized adjacency (MapSet-based)
     graph = graph_from_links(Enum.map(node_specs, &elem(&1, 0)), links)
 
     # 3) normalized edge attrs
     attrs = edge_attrs_from_links(links)
 
-    # 4) tell the Router (already normalized; no normalization inside Router)
+    # 3) tell the Router (already normalized; no normalization inside Router)
     Router.load_graph(graph, attrs)
+
+    # 4) start nodes with their protocol
+    Enum.each(node_specs, fn {id, proto_mod, proto_opts} ->
+      _ = ensure_node(id, proto_mod, proto_opts)
+    end)
   end
 
   @doc """
@@ -130,6 +130,17 @@ defmodule NetworkSim do
   """
   @spec clear_inbox(node_id()) :: :ok
   def clear_inbox(id), do: NetworkSim.Node.clear_inbox(id)
+
+  @doc """
+  Get a node's state.
+  """
+  @spec get_state(node_id()) :: any()
+  def get_state(id) do
+    case Registry.lookup(NetworkSim.Registry, {:node, id}) do
+      [{pid, _}] -> :sys.get_state(pid)
+      [] -> {:error, :node_not_found}
+    end
+  end
 
   # =========
   #  Helpers
