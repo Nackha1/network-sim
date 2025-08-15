@@ -34,13 +34,14 @@ defmodule NetworkSim.Protocol.DynamicMST do
           # Tree structure (directed: parent=nil only at root)
           parent: node_id() | nil,
           children: MapSet.t(node_id()),
+          neighbors: MapSet.t(node_id()),
 
           # Fragment identity and failure-fsm state
           fragment_id: fragment_id() | nil,
           f_state: :sleep | :reiden | :find | :found,
 
           # Non-tree neighbors (computed from Router.neighbors - tree endpoints)
-          non_tree: MapSet.t(node_id()),
+          # non_tree: MapSet.t(node_id()),
 
           # REIDEN broadcast-echo bookkeeping
           reiden_acks_expected: non_neg_integer(),
@@ -72,15 +73,14 @@ defmodule NetworkSim.Protocol.DynamicMST do
     children = MapSet.new(children0)
 
     neighbors = Router.neighbors(id)
-    non_tree = neighbors |> MapSet.delete(parent) |> MapSet.difference(children)
 
     %{
       id: id,
       parent: parent,
       children: children,
+      neighbors: neighbors,
       fragment_id: nil,
       f_state: :sleep,
-      non_tree: non_tree,
       reiden_acks_expected: 0,
       find_acks_expected: 0,
       child_reports: %{},
@@ -104,19 +104,20 @@ defmodule NetworkSim.Protocol.DynamicMST do
         {:router_link_down, neighbor, %{edge: {a, b}, attrs: %{weight: w}}},
         st
       ) do
-    # Detect which side of the tree this node is on for the failed tree edge.
-    # If it's a *non-tree* link, just forget it locally (paper 4.1 first paragraph).
+    st = %{st | neighbors: MapSet.delete(st.neighbors, neighbor)}
+
     cond do
-      # Non-tree failed: drop from non_tree set (paper 4.1 opening line)
-      MapSet.member?(st.non_tree, neighbor) ->
-        {:noreply, %{st | non_tree: MapSet.delete(st.non_tree, neighbor)}}
+      # Non-tree failed: no-op
+      not is_tree_link?(st, neighbor) ->
+        Logger.info("Non-tree link failed, no action required")
+        {:noreply, st}
 
       # Child endpoint lost its parent ⇒ becomes root and *enters REIDEN* (appendix (1))
       st.parent == neighbor ->
         fid = {w, st.id}
 
-        st1 = st |> set_fragment(fid) |> become_root()
-        safe_send(st1.id, st1.id, {:dmst, :REIDEN, fid})
+        st1 = st |> become_root() |> reiden_handler(fid)
+        # safe_send(st1.id, st1.id, {:dmst, :REIDEN, fid})
         {:noreply, st1}
 
       # Parent endpoint lost a child ⇒ propagate FAILURE upward with new fid (appendix (1))
@@ -127,6 +128,31 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
         {:noreply, st1}
     end
+  end
+
+  def reiden_handler(st, fid) do
+    st1 =
+      st
+      |> set_state(:reiden)
+      |> set_fragment(fid)
+      |> set_reiden_acks_expected(MapSet.size(st.children))
+
+    if MapSet.size(st1.children) == 0 do
+      if is_root?(st1) do
+        # I'm the root: start FINDMOE
+        safe_send(st1.id, st1.id, {:dmst, :FINDMOE, fid})
+      else
+        # I'm a leaf: send REIDEN_ACK to parent
+        safe_send(st1.id, st1.id, {:dmst, :REIDEN_ACK, fid})
+      end
+    else
+      # Send to children
+      Enum.each(st1.children, fn c ->
+        safe_send(st1.id, c, {:dmst, :REIDEN, fid})
+      end)
+    end
+
+    st1
   end
 
   # (2) Response to FAILURE<fid>
@@ -148,22 +174,23 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   # (3) Response to REIDEN<fid> (broadcast down); reply with REIDEN_ACK at leaves
   def handle_message(from, {:dmst, :REIDEN, fid}, st) do
-    st1 =
-      st
-      |> set_fragment(fid)
-      |> set_state(:reiden)
-      |> set_reiden_acks_expected(MapSet.size(st.children))
+    # st1 =
+    #   st
+    #   |> set_fragment(fid)
+    #   |> set_state(:reiden)
+    #   |> set_reiden_acks_expected(MapSet.size(st.children))
 
-    cond do
-      MapSet.size(st1.children) == 0 ->
-        # I'm a leaf: send REIDEN_ACK to parent (appendix (3))
-        _ = safe_send(st1.id, from, {:dmst, :REIDEN_ACK, fid})
-        {:noreply, st1}
+    # cond do
+    #   MapSet.size(st1.children) == 0 ->
+    #     # I'm a leaf: send REIDEN_ACK to parent (appendix (3))
+    #     _ = safe_send(st1.id, from, {:dmst, :REIDEN_ACK, fid})
+    #     {:noreply, st1}
 
-      true ->
-        Enum.each(st1.children, fn c -> safe_send(st1.id, c, {:dmst, :REIDEN, fid}) end)
-        {:noreply, st1}
-    end
+    #   true ->
+    #     Enum.each(st1.children, fn c -> safe_send(st1.id, c, {:dmst, :REIDEN, fid}) end)
+    #     {:noreply, st1}
+    # end
+    {:noreply, reiden_handler(st, fid)}
   end
 
   # (4) Response to REIDEN-ACK<fid>; root launches FINDMOE when all acks received
@@ -345,15 +372,15 @@ defmodule NetworkSim.Protocol.DynamicMST do
     if is_root do
       st1 = %{
         st
-        | children: MapSet.put(st.children, from),
-          non_tree: MapSet.delete(st.non_tree, from)
+        | children: MapSet.put(st.children, from)
       }
 
       # send_parent(st1, {:dmst, :REIDEN, st1.fragment_id})
       Logger.debug("Merging between #{st1.id} and #{from} completed")
       {:noreply, st1}
     else
-      st1 = %{st | parent: from, non_tree: MapSet.delete(st.non_tree, from)}
+      # st1 = %{st | parent: from, non_tree: MapSet.delete(st.non_tree, from)}
+      st1 = %{st | parent: from}
       {:noreply, st1}
     end
   end
@@ -400,10 +427,17 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   ## TEST phase
 
-  defp issue_tests(%{non_tree: nts} = st) do
+  # defp issue_tests(%{non_tree: nts} = st) do
+  #   fid = st.fragment_id
+  #   Enum.each(nts, fn n -> safe_send(st.id, n, {:dmst, :TEST, fid}) end)
+  #   %{st | test_pending: nts, test_results: [], local_moe: :none}
+  # end
+
+  defp issue_tests(st) do
     fid = st.fragment_id
-    Enum.each(nts, fn n -> safe_send(st.id, n, {:dmst, :TEST, fid}) end)
-    %{st | test_pending: nts, test_results: [], local_moe: :none}
+    out_neighs = st.neighbors |> MapSet.delete(st.parent) |> MapSet.difference(st.children)
+    Enum.each(out_neighs, fn n -> safe_send(st.id, n, {:dmst, :TEST, fid}) end)
+    %{st | test_pending: out_neighs, test_results: [], local_moe: :none}
   end
 
   defp add_test_result(st, {n, nil}) do
@@ -476,6 +510,12 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
     safe_send(st.id, other, {:dmst, :CONNECT, st.fragment_id})
   end
+
+  defp is_tree_link?(st, other) do
+    st.parent == other or MapSet.member?(st.children, other)
+  end
+
+  defp is_root?(st), do: st.parent == nil
 
   defp undirected(a, b), do: if(a <= b, do: {a, b}, else: {b, a})
 

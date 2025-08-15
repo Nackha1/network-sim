@@ -52,6 +52,10 @@ defmodule NetworkSim.Router do
   def load_graph(graph_spec, attrs, protocol),
     do: GenServer.call(__MODULE__, {:load_graph, graph_spec, attrs, protocol})
 
+  @doc """
+  Get the current node IDs.
+  """
+  @spec nodes() :: [node_id()]
   def nodes(), do: GenServer.call(__MODULE__, {:nodes})
 
   @doc """
@@ -110,18 +114,22 @@ defmodule NetworkSim.Router do
     {:reply, :ok, %{graph: graph, disabled: MapSet.new(), attrs: attrs}}
   end
 
+  @impl true
   def handle_call({:nodes}, _from, state) do
     {:reply, Map.keys(state.graph), state}
   end
 
+  @impl true
   def handle_call({:edge_attr, e}, _from, %{attrs: attrs} = state) do
     {:reply, Map.get(attrs, e), state}
   end
 
+  @impl true
   def handle_call({:neighbors, node_id}, _from, %{graph: g} = state) do
-    {:reply, Map.get(g, node_id, MapSet.new()), state}
+    {:reply, Map.get(g, node_id), state}
   end
 
+  @impl true
   def handle_call({:disable, e}, _from, %{graph: g, disabled: dis, attrs: attrs} = state) do
     {a, b} = e
 
@@ -129,7 +137,7 @@ defmodule NetworkSim.Router do
     if edge_exists?(g, a, b) do
       if MapSet.member?(dis, e) do
         # already disabled
-        {:reply, :ok, state}
+        {:reply, {:warning, :link_already_disabled}, state}
       else
         dis2 = MapSet.put(dis, e)
         meta = %{edge: e, attrs: Map.get(attrs, e)}
@@ -140,10 +148,11 @@ defmodule NetworkSim.Router do
         {:reply, :ok, %{state | disabled: dis2}}
       end
     else
-      {:reply, :ok, state}
+      {:reply, {:error, :unknown_edge}, state}
     end
   end
 
+  @impl true
   def handle_call({:enable, e}, _from, %{graph: g, disabled: dis, attrs: attrs} = state) do
     {a, b} = e
 
@@ -159,17 +168,19 @@ defmodule NetworkSim.Router do
         {:reply, :ok, %{state | disabled: dis2}}
       else
         # already enabled
-        {:reply, :ok, state}
+        {:reply, {:warning, :link_already_enabled}, state}
       end
     else
-      {:reply, :ok, state}
+      {:reply, {:error, :unknown_edge}, state}
     end
   end
 
+  @impl true
   def handle_call({:link_enabled?, e}, _from, %{disabled: dis} = state) do
     {:reply, not MapSet.member?(dis, e), state}
   end
 
+  @impl true
   def handle_call({:send, from, to, payload}, _from, %{graph: g, disabled: dis} = state) do
     cond do
       from == to ->
@@ -197,6 +208,8 @@ defmodule NetworkSim.Router do
   @spec undirected(node_id(), node_id()) :: edge_key()
   defp undirected(a, b), do: if(a <= b, do: {a, b}, else: {b, a})
 
+  # Check if edge exists in the graph
+  @spec edge_exists?(graph(), node_id(), node_id()) :: boolean()
   defp edge_exists?(g, a, b) do
     case Map.get(g, a) do
       nil -> false
