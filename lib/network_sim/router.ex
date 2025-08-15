@@ -52,6 +52,8 @@ defmodule NetworkSim.Router do
   def load_graph(graph_spec, attrs, protocol),
     do: GenServer.call(__MODULE__, {:load_graph, graph_spec, attrs, protocol})
 
+  def nodes(), do: GenServer.call(__MODULE__, {:nodes})
+
   @doc """
     Read attributes for an undirected edge `{a,b}`.
     Returns `nil` if none are set.
@@ -106,6 +108,10 @@ defmodule NetworkSim.Router do
   def handle_call({:load_graph, graph, attrs}, _from, _state) do
     Logger.info("Graph loaded with #{map_size(graph)} nodes")
     {:reply, :ok, %{graph: graph, disabled: MapSet.new(), attrs: attrs}}
+  end
+
+  def handle_call({:nodes}, _from, state) do
+    {:reply, Map.keys(state.graph), state}
   end
 
   def handle_call({:edge_attr, e}, _from, %{attrs: attrs} = state) do
@@ -167,7 +173,9 @@ defmodule NetworkSim.Router do
   def handle_call({:send, from, to, payload}, _from, %{graph: g, disabled: dis} = state) do
     cond do
       from == to ->
-        {:reply, {:error, :same_node}, state}
+        deliver(from, to, payload, state)
+
+      # {:reply, {:error, :same_node}, state}
 
       not Map.has_key?(g, from) or not Map.has_key?(g, to) ->
         {:reply, {:error, :unknown_node}, state}
@@ -179,14 +187,7 @@ defmodule NetworkSim.Router do
         {:reply, {:error, :link_disabled}, state}
 
       true ->
-        case Registry.lookup(NetworkSim.Registry, {:node, to}) do
-          [{pid, _}] ->
-            GenServer.cast(pid, {:deliver, from, payload})
-            {:reply, :ok, state}
-
-          [] ->
-            {:reply, {:error, :unknown_receiver_pid}, state}
-        end
+        deliver(from, to, payload, state)
     end
   end
 
@@ -208,6 +209,17 @@ defmodule NetworkSim.Router do
     case Registry.lookup(NetworkSim.Registry, {:node, id}) do
       [{pid, _}] -> GenServer.cast(pid, {:deliver, :router, msg})
       [] -> :ok
+    end
+  end
+
+  defp deliver(from, to, payload, state) do
+    case Registry.lookup(NetworkSim.Registry, {:node, to}) do
+      [{pid, _}] ->
+        GenServer.cast(pid, {:deliver, from, payload})
+        {:reply, :ok, state}
+
+      [] ->
+        {:reply, {:error, :unknown_receiver_pid}, state}
     end
   end
 end

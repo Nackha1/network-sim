@@ -7,6 +7,7 @@ defmodule NetworkSim do
     * **two lists** of `nodes` and `links` via `start_network/2`.
   """
 
+  require Logger
   alias NetworkSim.Router
 
   @typedoc """
@@ -134,12 +135,21 @@ defmodule NetworkSim do
   @doc """
   Get a node's state.
   """
-  @spec get_state(node_id()) :: any()
-  def get_state(id) do
+  @spec get_raw_state(node_id()) :: any()
+  def get_raw_state(id) do
     case Registry.lookup(NetworkSim.Registry, {:node, id}) do
       [{pid, _}] -> :sys.get_state(pid)
       [] -> {:error, :node_not_found}
     end
+  end
+
+  def get_tree() do
+    nodes = Router.nodes()
+
+    Enum.each(nodes, fn node_id ->
+      res = Map.take(NetworkSim.Node.state(node_id), [:id, :parent, :children])
+      Logger.debug("#{inspect(res)}")
+    end)
   end
 
   # =========

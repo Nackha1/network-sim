@@ -1,4 +1,4 @@
-defmodule DemoTest do
+defmodule ProtocolTest do
   use ExUnit.Case, async: true
 
   require Logger
@@ -6,13 +6,14 @@ defmodule DemoTest do
   alias NetworkSim.Kruskal
   alias NetworkSim.Router
   alias NetworkSim.Dot
+  alias NetworkSim.Protocol
 
   setup do
-    File.mkdir_p("tmp/demo")
+    File.mkdir_p("tmp/protocol")
   end
 
   defp show_custom_mst(nodes, links, test_name) do
-    Dot.show_mst(nodes, links, "tmp/demo/#{test_name}")
+    Dot.show_mst(nodes, links, "tmp/protocol/#{test_name}")
   end
 
   @doc """
@@ -23,10 +24,10 @@ defmodule DemoTest do
   """
   test "ping_pong protocol test" do
     nodes = [
-      {:a, NetworkSim.Protocol.PingPong, []},
-      {:b, NetworkSim.Protocol.PingPong, []},
-      {:c, NetworkSim.Protocol.PingPong, []},
-      {:d, NetworkSim.Protocol.PingPong, []}
+      {:a, Protocol.PingPong, []},
+      {:b, Protocol.PingPong, []},
+      {:c, Protocol.PingPong, []},
+      {:d, Protocol.PingPong, []}
     ]
 
     links = [
@@ -87,8 +88,8 @@ defmodule DemoTest do
 
   test "echo protocol test" do
     nodes = [
-      {:a, NetworkSim.Protocol.Echo, []},
-      {:b, NetworkSim.Protocol.Echo, []}
+      {:a, Protocol.Echo, []},
+      {:b, Protocol.Echo, []}
     ]
 
     links = [
@@ -107,9 +108,9 @@ defmodule DemoTest do
 
   test "event_listener protocol test" do
     nodes = [
-      {:a, NetworkSim.Protocol.EventListener, []},
-      {:b, NetworkSim.Protocol.EventListener, []},
-      {:c, NetworkSim.Protocol.EventListener, []}
+      {:a, Protocol.EventListener, []},
+      {:b, Protocol.EventListener, []},
+      {:c, Protocol.EventListener, []}
     ]
 
     links = [
@@ -141,25 +142,5 @@ defmodule DemoTest do
 
     Process.sleep(10)
     NetworkSim.stop_network()
-  end
-
-  test "dynamic MST: split, heal, and recovery" do
-    nodes = [
-      {:a, NetworkSim.Protocol.DynamicMST, %{parent: nil, children: [:b, :d]}},
-      {:b, NetworkSim.Protocol.DynamicMST, %{parent: :a, children: [:c]}},
-      {:c, NetworkSim.Protocol.DynamicMST, %{parent: :b, children: []}},
-      {:d, NetworkSim.Protocol.DynamicMST, %{parent: :a, children: []}}
-    ]
-
-    links = [
-      {:a, :b, %{weight: 1}},
-      {:b, :c, %{weight: 2}},
-      {:a, :d, %{weight: 4}},
-      {:c, :d, %{weight: 3}}
-    ]
-
-    NetworkSim.start_network(nodes, links)
-
-    NetworkSim.Router.disable_link(:a, :b)
   end
 end

@@ -39,6 +39,8 @@ defmodule NetworkSim.Node do
     GenServer.start_link(__MODULE__, {id, opts}, name: via(id))
   end
 
+  def state(id), do: GenServer.call(via(id), :state)
+
   @doc """
   Return the node's current inbox
   """
@@ -77,6 +79,11 @@ defmodule NetworkSim.Node do
   end
 
   @impl true
+  def handle_call(:state, _from, state) do
+    {:reply, state.proto_state, state}
+  end
+
+  @impl true
   def handle_call(:inbox, _from, state) do
     {:reply, Enum.reverse(state.inbox), state}
   end
@@ -91,9 +98,22 @@ defmodule NetworkSim.Node do
         {:deliver, from, payload},
         %{id: id, inbox: inbox, proto_mod: pm, proto_state: ps} = state
       ) do
-    Logger.debug("Received from=#{inspect(from)} payload=#{inspect(payload)}",
-      module: __MODULE__
-    )
+    case from do
+      :router ->
+        Logger.warning("Received router event #{inspect(payload)}", module: __MODULE__)
+
+      ^id ->
+        Logger.debug("Received self-message (#{inspect(payload)})", module: __MODULE__)
+
+      _ ->
+        Logger.info("Received message from=#{inspect(from)} payload=#{inspect(payload)}",
+          module: __MODULE__
+        )
+    end
+
+    # Logger.info("Received from=#{inspect(from)} payload=#{inspect(payload)}",
+    #   module: __MODULE__
+    # )
 
     # Always record deliveries (handy for tests/inspection)
     new_state = %{state | inbox: [{from, payload} | inbox]}
