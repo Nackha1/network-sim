@@ -56,7 +56,11 @@ defmodule NetworkSim.Protocol.DynamicMST do
           test_results: [{node_id(), weight()}],
 
           # CHANGE_ROOT forwarding bookkeeping (which child reported the chosen moe)
-          reporter_for_moe: node_id() | nil
+          reporter_for_moe: node_id() | nil,
+
+          # === NEW: GHS-style merge handshake tracking ===
+          connect_sent: MapSet.t(node_id()),
+          connect_recv: MapSet.t(node_id())
         }
 
   @impl true
@@ -87,7 +91,9 @@ defmodule NetworkSim.Protocol.DynamicMST do
       local_moe: :none,
       test_pending: MapSet.new(),
       test_results: [],
-      reporter_for_moe: nil
+      reporter_for_moe: nil,
+      connect_sent: MapSet.new(),
+      connect_recv: MapSet.new()
     }
   end
 
@@ -133,7 +139,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
   def reiden_handler(st, fid) do
     st1 =
       st
-      |> set_state(:reiden)
+      |> reset_state(:reiden)
       |> set_fragment(fid)
       |> set_reiden_acks_expected(MapSet.size(st.children))
 
@@ -291,10 +297,23 @@ defmodule NetworkSim.Protocol.DynamicMST do
         st1.parent != nil and st1.find_acks_expected == 0 ->
           # My local moe competes with children’s; pick best
           chosen = best_moe([st1.local_moe | Map.values(st1.child_reports)])
-          send_parent(st1, {:dmst, :FINDMOE_ACK, fid, chosen})
+
+          reporter =
+            case chosen do
+              :none ->
+                nil
+
+              child ->
+                # If we have a chosen moe, find the child that reported it
+                reporter_child_for(child, st1)
+            end
+
+          st2 = %{st1 | reporter_for_moe: reporter}
+
+          send_parent(st2, {:dmst, :FINDMOE_ACK, fid, chosen})
           # safe_send(st1.id, st1.parent, {:dmst, :FINDMOE_ACK, fid, chosen})
 
-          {:noreply, st1 |> set_state(:found)}
+          {:noreply, st2 |> set_state(:found)}
 
         st1.parent == nil and st1.find_acks_expected == 0 and
             MapSet.size(st1.test_pending) == 0 ->
@@ -323,8 +342,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
                  }}
               else
                 # moe is incident to root ⇒ proceed directly (appendix (7) will send CONNECT)
-                send_connect_for(chosen, st2)
-                {:noreply, st2}
+                st3 = send_connect_for(chosen, st2)
+                {:noreply, st3}
               end
           end
 
@@ -351,8 +370,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
       if st1.id == u or st1.id == v do
         # I'm incident to moe — send CONNECT over moe
-        send_connect_for({:edge, e, w}, st1)
-        {:noreply, st1}
+        st2 = send_connect_for({:edge, e, w}, st1)
+        {:noreply, st2}
       else
         # Forward to the child that reported this moe in my subtree
 
@@ -367,22 +386,27 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   def handle_message(from, {:dmst, :CONNECT, _fid}, st) do
     # TODO: Implement merging functionality
-    is_root = st.id > from
+    # is_root = st.id > from
 
-    if is_root do
-      st1 = %{
-        st
-        | children: MapSet.put(st.children, from)
-      }
+    # if is_root do
+    #   st1 = %{
+    #     st
+    #     | children: MapSet.put(st.children, from)
+    #   }
 
-      # send_parent(st1, {:dmst, :REIDEN, st1.fragment_id})
-      Logger.debug("Merging between #{st1.id} and #{from} completed")
-      {:noreply, st1}
-    else
-      # st1 = %{st | parent: from, non_tree: MapSet.delete(st.non_tree, from)}
-      st1 = %{st | parent: from}
-      {:noreply, st1}
-    end
+    #   # send_parent(st1, {:dmst, :REIDEN, st1.fragment_id})
+    #   Logger.debug("Merging between #{st1.id} and #{from} completed")
+    #   {:noreply, st1}
+    # else
+    #   # st1 = %{st | parent: from, non_tree: MapSet.delete(st.non_tree, from)}
+    #   st1 = %{st | parent: from}
+    #   {:noreply, st1}
+    # end
+
+    # We received CONNECT from `from`; record and check if we also sent to `from`
+    st1 = mark_connect_recv(st, from)
+    st2 = maybe_commit_merge(st1, from)
+    {:noreply, st2}
   end
 
   def handle_message(_from, {:dmst, :GOSLEEP, fid}, st) do
@@ -427,12 +451,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   ## TEST phase
 
-  # defp issue_tests(%{non_tree: nts} = st) do
-  #   fid = st.fragment_id
-  #   Enum.each(nts, fn n -> safe_send(st.id, n, {:dmst, :TEST, fid}) end)
-  #   %{st | test_pending: nts, test_results: [], local_moe: :none}
-  # end
-
   defp issue_tests(st) do
     fid = st.fragment_id
     out_neighs = st.neighbors |> MapSet.delete(st.parent) |> MapSet.difference(st.children)
@@ -473,8 +491,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
       if st1.find_acks_expected == 0 do
         send_parent(st1, {:dmst, :FINDMOE_ACK, fid, st1.local_moe})
 
-        reset_state(st1, :found)
-        # st1 |> set_state(:found)
+        # reset_state(st1, :found)
+        st1 |> set_state(:found)
       else
         st1
       end
@@ -504,11 +522,57 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end)
   end
 
+  # defp send_connect_for({:edge, {u, v}, _w}, st) do
+  #   # Emit CONNECT over the moe (appendix (7)).
+  #   other = if st.id == u, do: v, else: u
+
+  #   safe_send(st.id, other, {:dmst, :CONNECT, st.fragment_id})
+  # end
+  # === CONNECT helpers (handshake-aware) ===
+
+  # Send CONNECT if we are incident to the edge; mark as "sent"; try to commit if peer already sent.
   defp send_connect_for({:edge, {u, v}, _w}, st) do
-    # Emit CONNECT over the moe (appendix (7)).
     other = if st.id == u, do: v, else: u
 
     safe_send(st.id, other, {:dmst, :CONNECT, st.fragment_id})
+    st1 = mark_connect_sent(st, other)
+    maybe_commit_merge(st1, other)
+  end
+
+  defp mark_connect_sent(st, n), do: %{st | connect_sent: MapSet.put(st.connect_sent, n)}
+  defp mark_connect_recv(st, n), do: %{st | connect_recv: MapSet.put(st.connect_recv, n)}
+
+  # Commit the merge only if we've both sent and received CONNECT on this neighbor.
+  defp maybe_commit_merge(st, n) do
+    if MapSet.member?(st.connect_sent, n) and MapSet.member?(st.connect_recv, n) do
+      st
+      |> commit_merge(n)
+      |> clear_connect_flags(n)
+    else
+      st
+    end
+  end
+
+  defp clear_connect_flags(st, n) do
+    %{
+      st
+      | connect_sent: MapSet.delete(st.connect_sent, n),
+        connect_recv: MapSet.delete(st.connect_recv, n)
+    }
+  end
+
+  # Deterministic orientation: larger id becomes parent, smaller id becomes child.
+  # This avoids cycles without levels.
+  defp commit_merge(st, n) do
+    cond do
+      st.id > n ->
+        # I am the parent; add neighbor as child
+        %{st | children: MapSet.put(st.children, n)} |> become_root() |> reiden_handler(st.id)
+
+      true ->
+        # I am the child; set my parent to neighbor
+        %{st | parent: n, children: MapSet.delete(st.children, n)}
+    end
   end
 
   defp is_tree_link?(st, other) do
@@ -550,6 +614,16 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   defp reset_state(st, state) do
-    %{st | f_state: state, test_results: [], child_reports: %{}}
+    %{
+      st
+      | f_state: state,
+        reiden_acks_expected: 0,
+        find_acks_expected: 0,
+        child_reports: %{},
+        local_moe: :none,
+        test_pending: MapSet.new(),
+        test_results: [],
+        reporter_for_moe: nil
+    }
   end
 end

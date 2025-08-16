@@ -49,5 +49,9 @@ defmodule ProtocolTest do
     NetworkSim.start_network(nodes, links)
 
     NetworkSim.disable_link(:a, :b)
+
+    Enum.each(new_nodes, fn n ->
+      IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
+    end)
   end
 end
