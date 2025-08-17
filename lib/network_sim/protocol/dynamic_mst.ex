@@ -9,7 +9,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
     * Messages: `:FAILURE`, `:REIDEN`, `:REIDEN_ACK`, `:FINDMOE`, `:FINDMOE_ACK`,
       `:CHANGE_ROOT`, `:TEST`, `:ACCEPT`, `:REJECT`, `:GOSLEEP`
-    * Node f-states: `:sleep | :reiden | :find | :found`
+    * Node f-states: `:sleep | :reiden | :find | :found | :recover`
 
   The Router sends control notifications:
     * `{:router_link_down, neighbor, %{edge: {a,b}, attrs: %{weight: w}}}`
@@ -27,6 +27,9 @@ defmodule NetworkSim.Protocol.DynamicMST do
   @type fragment_id :: {weight(), node_id()}
   @type moe :: :none | {:edge, {edge_key(), weight()}}
 
+  # @type edge_id :: {weight(), edge_key()}
+  @type edge_id :: weight()
+
   @typedoc "Local protocol state"
   @type t :: %{
           id: node_id(),
@@ -38,7 +41,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
           # Fragment identity and failure-fsm state
           fragment_id: fragment_id() | nil,
-          f_state: :sleep | :reiden | :find | :found,
+          f_state: :sleep | :reiden | :find | :found | :recover,
+          find_moe_round: non_neg_integer(),
 
           # REIDEN broadcast-echo bookkeeping
           reiden_acks_expected: non_neg_integer(),
@@ -53,9 +57,12 @@ defmodule NetworkSim.Protocol.DynamicMST do
           # CHANGE_ROOT forwarding bookkeeping (which child reported the chosen moe)
           reporter_for_moe: node_id() | nil,
 
-          # === NEW: GHS-style merge handshake tracking ===
+          # GHS-style merge handshake tracking
           connect_sent: MapSet.t(node_id()),
-          connect_recv: MapSet.t(node_id())
+          connect_recv: MapSet.t(node_id()),
+
+          # Recovery tracking
+          recovery_recv: MapSet.t(edge_id())
         }
 
   @impl true
@@ -76,27 +83,88 @@ defmodule NetworkSim.Protocol.DynamicMST do
       neighbors: Router.neighbors(id),
       fragment_id: nil,
       f_state: :sleep,
+      find_moe_round: 0,
       reiden_acks_expected: 0,
       find_acks_expected: 0,
       local_moe: :none,
       test_pending: MapSet.new(),
       reporter_for_moe: nil,
       connect_sent: MapSet.new(),
-      connect_recv: MapSet.new()
+      connect_recv: MapSet.new(),
+      recovery_recv: MapSet.new()
     }
   end
 
-  @impl true
-  @doc """
-  Message handler. We only implement **failure** side (appendix (1)–(7)).
+  defp gen_fid(weight, node_id) do
+    {weight, node_id}
+  end
 
-  The `from` is either a neighbor node id, or `:router` for control notifications.
-  """
+  @impl true
+  def handle_message(
+        :router,
+        {:router_link_up, neighbor, %{edge: {_a, _b}, attrs: %{weight: w}}},
+        st
+      ) do
+    Logger.info("Router link up: #{inspect(neighbor)} with weight #{inspect(w)}")
+    st = %{st | neighbors: MapSet.put(st.neighbors, neighbor)}
+    safe_send(st.id, neighbor, {:ID_CHECK, st.fragment_id})
+    {:noreply, st}
+  end
+
+  @impl true
+  def handle_message(from, {:ID_CHECK, fid}, %{fragment_id: fid} = st) do
+    st = st |> set_state(:recover)
+
+    if not is_root?(st) do
+      send_parent(
+        st,
+        {:RECOVERY_IN, fid, edge_weight(st.id, from), edge_weight(st.id, st.parent)}
+      )
+    end
+
+    {:noreply, st}
+  end
+
+  @impl true
+  def handle_message(_from, {:ID_CHECK, _fid}, st) do
+    st = st |> set_state(:recover)
+
+    send_parent(st, {:RECOVERY_OUT, st.fragment_id})
+
+    {:noreply, st}
+  end
+
+  @impl true
+  def handle_message(_from, {:RECOVERY_OUT, fid}, %{fragment_id: fid} = st) do
+    if is_root?(st) do
+      # I'm the root: start new FINDMOE round
+      st = start_new_findmoe_round(st)
+      st
+    else
+      send_parent(st, {:RECOVERY_OUT, st.fragment_id})
+    end
+
+    {:noreply, st}
+  end
+
+  @impl true
+  def handle_message(_from, {:RECOVERY_IN, fid, w_e, w}, %{fragment_id: fid} = st) do
+    st = st |> set_state(:recover)
+
+    if not is_root?(st) do
+      w_prime = Enum.max([w, edge_weight(st.id, st.parent)])
+      send_parent(st, {:RECOVERY, fid, w_e, w_prime})
+    end
+
+    {:noreply, %{st | recovery_recv: MapSet.put(st.recovery_recv, w_e)}}
+  end
+
+  @impl true
   @spec handle_message(from :: term(), payload :: term(), st :: t()) ::
           {:noreply, t()} | {:reply, term(), t()}
   def handle_message(
         :router,
-        {:router_link_down, neighbor, %{edge: {a, b}, attrs: %{weight: w}}},
+        {:router_link_down, neighbor, %{edge: {_a, _b}, attrs: %{weight: w}}},
         st
       ) do
     st = %{st | neighbors: MapSet.delete(st.neighbors, neighbor)}
@@ -109,7 +177,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
       # Child endpoint lost its parent ⇒ becomes root and *enters REIDEN* (appendix (1))
       st.parent == neighbor ->
-        fid = {w, st.id}
+        fid = gen_fid(w, st.id)
 
         st1 = st |> become_root() |> reiden_handler(fid)
         # safe_send(st1.id, st1.id, {  :REIDEN, fid})
@@ -117,7 +185,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
       # Parent endpoint lost a child ⇒ propagate FAILURE upward with new fid (appendix (1))
       true ->
-        fid = {w, st.id}
+        fid = gen_fid(w, st.id)
         st1 = st |> set_fragment(fid) |> remove_child(neighbor)
         safe_send(st1.id, st1.id, {:FAILURE, fid})
 
@@ -135,23 +203,26 @@ defmodule NetworkSim.Protocol.DynamicMST do
     if MapSet.size(st1.children) == 0 do
       if is_root?(st1) do
         # I'm the root: start FINDMOE
-        safe_send(st1.id, st1.id, {:FINDMOE, fid})
+        # safe_send(st1.id, st1.id, {:FINDMOE, fid})
+        st1 = start_new_findmoe_round(st1)
+        st1
       else
         # I'm a leaf: send REIDEN_ACK to parent
         safe_send(st1.id, st1.id, {:REIDEN_ACK, fid})
+        st1
       end
     else
       # Send to children
       Enum.each(st1.children, fn c ->
         safe_send(st1.id, c, {:REIDEN, fid})
       end)
-    end
 
-    st1
+      st1
+    end
   end
 
   # (2) Response to FAILURE<fid>
-  def handle_message(from, {:FAILURE, fid}, st) do
+  def handle_message(_from, {:FAILURE, fid}, st) do
     cond do
       # If I'm the root, adopt fid and start REIDEN broadcast (appendix (2))
       st.parent == nil ->
@@ -167,21 +238,28 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end
   end
 
+  def start_new_findmoe_round(st) do
+    st = %{st | find_moe_round: st.find_moe_round + 1}
+    safe_send(st.id, st.id, {:FINDMOE, st.fragment_id, st.find_moe_round})
+    st
+  end
+
   # (3) Response to REIDEN<fid> (broadcast down); reply with REIDEN_ACK at leaves
-  def handle_message(from, {:REIDEN, fid}, st) do
+  def handle_message(_from, {:REIDEN, fid}, st) do
     {:noreply, reiden_handler(st, fid)}
   end
 
   # (4) Response to REIDEN-ACK<fid>; root launches FINDMOE when all acks received
-  def handle_message(from, {:REIDEN_ACK, fid}, st) do
-    # Accept only if ids match (appendix (4))
+  def handle_message(_from, {:REIDEN_ACK, fid}, st) do
+    # Accept only if ids match
     if st.fragment_id == fid do
       st1 = dec_reiden_ack(st)
 
       if st1.reiden_acks_expected == 0 do
         if st1.parent == nil do
-          # I'm the leader/root; start FINDMOE broadcast (appendix (4))
-          safe_send(st1.id, st1.id, {:FINDMOE, fid})
+          # I'm the leader/root; start FINDMOE broadcast
+          # safe_send(st1.id, st1.id, {:FINDMOE, fid})
+          st1 = start_new_findmoe_round(st1)
           {:noreply, st1}
         else
           # Forward REIDEN_ACK to parent
@@ -197,17 +275,17 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   # (5) Response to FINDMOE<fid>: issue TEST to all non-tree links; echo up with local moe
-  def handle_message(from, {:FINDMOE, fid}, st) do
+  def handle_message(_from, {:FINDMOE, fid, round}, st) do
     if st.fragment_id == fid do
       st1 =
-        st
+        %{st | find_moe_round: round}
         |> set_state(:find)
         |> set_find_acks_expected(MapSet.size(st.children))
         |> issue_tests()
         |> maybe_report_back()
 
       # Forward FINDMOE to children
-      Enum.each(st1.children, fn c -> safe_send(st1.id, c, {:FINDMOE, fid}) end)
+      Enum.each(st1.children, fn c -> safe_send(st1.id, c, {:FINDMOE, fid, round}) end)
 
       {:noreply, st1}
     else
@@ -272,19 +350,23 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   # (6) Response to FINDMOE-ACK<fid, moe> from a child; root chooses global moe and sends CHANGE-ROOT
-  def handle_message(from, {:FINDMOE_ACK, fid, child_moe}, st) do
+  def handle_message(from, {:FINDMOE_ACK, fid, round, child_moe}, st) do
     if st.fragment_id == fid do
-      if(from == st.id) do
-        st1 = st |> react_to_moe(st.local_moe)
-        {:noreply, st1}
+      if round < st.find_moe_round do
+        {:noreply, st}
       else
-        st1 =
-          st
-          |> update_local_moe(child_moe, from)
-          |> dec_find_ack()
-          |> maybe_report_back()
+        if(from == st.id) do
+          st1 = st |> react_to_moe(st.local_moe)
+          {:noreply, st1}
+        else
+          st1 =
+            st
+            |> update_local_moe(child_moe, from)
+            |> dec_find_ack()
+            |> maybe_report_back()
 
-        {:noreply, st1}
+          {:noreply, st1}
+        end
       end
     else
       {:noreply, st}
@@ -318,7 +400,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   # (7) Response to CHANGE-ROOT<fid, moe>
-  def handle_message(from, {:CHANGE_ROOT, fid, {:edge, {{u, v}, w}} = moe}, st) do
+  def handle_message(from, {:CHANGE_ROOT, fid, {:edge, {{u, v}, _w}} = moe}, st) do
     # Orient root-change down toward the endpoint; if incident, emit CONNECT (appendix (7))
     if st.fragment_id == fid do
       # st1 = st |> react_to_moe(moe)
@@ -407,7 +489,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   defp maybe_report_back(st) do
     if MapSet.size(st.test_pending) == 0 and st.find_acks_expected == 0 do
-      send_parent(st, {:FINDMOE_ACK, st.fragment_id, st.local_moe})
+      send_parent(st, {:FINDMOE_ACK, st.fragment_id, st.find_moe_round, st.local_moe})
 
       st |> set_state(:found)
     else
@@ -502,6 +584,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
     %{
       st
       | f_state: state,
+        find_moe_round: 0,
         reiden_acks_expected: 0,
         find_acks_expected: 0,
         local_moe: :none,

@@ -2,10 +2,8 @@ defmodule ProtocolTest do
   use ExUnit.Case, async: true
 
   require Logger
-
-  alias NetworkSim.Kruskal
-  alias NetworkSim.Router
   alias NetworkSim.Dot
+  alias NetworkSim.Protocol
 
   setup do
     File.mkdir_p("tmp/dmst")
@@ -25,33 +23,53 @@ defmodule ProtocolTest do
     ]
 
     links = [
-      {:a, :b, %{weight: 1}},
+      {:a, :b, %{weight: 8}},
       {:a, :c, %{weight: 1}},
-      {:c, :d, %{weight: 1}},
-      {:c, :e, %{weight: 1}},
+      {:c, :d, %{weight: 2}},
+      {:c, :e, %{weight: 3}},
       {:a, :d, %{weight: 5}},
       {:a, :e, %{weight: 6}}
     ]
 
-    nodes = [
-      {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
-      {:b, Protocol.DynamicMST, %{parent: :a, children: []}}
-    ]
+    # nodes = [
+    #   {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
+    #   {:b, Protocol.DynamicMST, %{parent: :a, children: []}}
+    # ]
 
-    links = [
-      {:a, :b, %{weight: 3}}
-    ]
+    # links = [
+    #   {:a, :b, %{weight: 3}}
+    # ]
 
-    test_name = "dynamic_mst"
-    new_nodes = Enum.map(nodes, &elem(&1, 0))
-    show_custom_mst(new_nodes, links, test_name)
+    test_name = "dynamic_mst_start"
+    show_custom_mst(Enum.map(nodes, &elem(&1, 0)), links, test_name)
 
     NetworkSim.start_network(nodes, links)
 
+    NetworkSim.disable_link(:a, :c)
+    NetworkSim.disable_link(:a, :d)
     NetworkSim.disable_link(:a, :b)
+    NetworkSim.enable_link(:a, :c)
 
-    Enum.each(new_nodes, fn n ->
-      IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
-    end)
+    Process.sleep(100)
+
+    tree = NetworkSim.get_tree()
+
+    Logger.info("Tree after disabling links: #{inspect(tree, pretty: true)}")
+
+    test_name = "dynamic_mst_end"
+
+    show_custom_mst(
+      Enum.map(nodes, &elem(&1, 0)),
+      (links --
+         [{:a, :c, %{weight: 1}}, {:a, :d, %{weight: 5}}, {:a, :b, %{weight: 8}}]) ++
+        [{:a, :c, %{weight: 1}}],
+      test_name
+    )
+
+    # Enum.each(new_nodes, fn n ->
+    #   IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
+    # end)
+
+    NetworkSim.stop_network()
   end
 end

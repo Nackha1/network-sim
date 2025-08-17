@@ -143,12 +143,24 @@ defmodule NetworkSim do
     end
   end
 
-  def get_tree() do
-    nodes = Router.nodes()
+  # def get_tree() do
+  #   nodes = Router.nodes()
+  #   res = []
 
-    Enum.each(nodes, fn node_id ->
-      res = Map.take(NetworkSim.Node.state(node_id), [:id, :parent, :children])
-      Logger.debug("#{inspect(res)}")
+  #   Enum.each(nodes, fn node_id ->
+  #     res = res ++ Map.take(NetworkSim.Node.state(node_id), [:id, :parent, :children])
+  #     # Logger.debug("#{inspect(res)}")
+  #   end)
+
+  #   res
+  # end
+  @spec get_tree() :: [map()]
+  def get_tree() do
+    Router.nodes()
+    |> Enum.map(fn node_id ->
+      node_id
+      |> NetworkSim.Node.state()
+      |> Map.take([:id, :parent, :children])
     end)
   end
 
