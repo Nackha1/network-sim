@@ -41,7 +41,8 @@ defmodule ProtocolTest do
     # ]
 
     test_name = "dynamic_mst_start"
-    show_custom_mst(Enum.map(nodes, &elem(&1, 0)), links, test_name)
+    nodes_ids = Enum.map(nodes, &elem(&1, 0))
+    show_custom_mst(nodes_ids, links, test_name)
 
     NetworkSim.start_network(nodes, links)
 
@@ -59,14 +60,14 @@ defmodule ProtocolTest do
     test_name = "dynamic_mst_end"
 
     show_custom_mst(
-      Enum.map(nodes, &elem(&1, 0)),
+      nodes_ids,
       (links --
          [{:a, :c, %{weight: 1}}, {:a, :d, %{weight: 5}}, {:a, :b, %{weight: 8}}]) ++
         [{:a, :c, %{weight: 1}}],
       test_name
     )
 
-    # Enum.each(new_nodes, fn n ->
+    # Enum.each(nodes_ids, fn n ->
     #   IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
     # end)
 

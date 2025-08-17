@@ -26,7 +26,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
   @type weight :: number()
   @type fragment_id :: {weight(), node_id()}
   @type moe :: :none | {:edge, {edge_key(), weight()}}
-
   # @type edge_id :: {weight(), edge_key()}
   @type edge_id :: weight()
 
@@ -95,10 +94,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
     }
   end
 
-  defp gen_fid(weight, node_id) do
-    {weight, node_id}
-  end
-
+  # RECOVERY Section
   @impl true
   def handle_message(
         :router,
@@ -148,6 +144,12 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   @impl true
+  def handle_message(_from, {:RECOVERY_OUT, fid}, st) do
+    Logger.warning("Discarding old recovery message, with fid #{inspect(fid)}")
+    {:noreply, st}
+  end
+
+  @impl true
   def handle_message(_from, {:RECOVERY_IN, fid, w_e, w}, %{fragment_id: fid} = st) do
     st = st |> set_state(:recover)
 
@@ -158,6 +160,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
     {:noreply, %{st | recovery_recv: MapSet.put(st.recovery_recv, w_e)}}
   end
+
+  # FAILURE Section
 
   @impl true
   @spec handle_message(from :: term(), payload :: term(), st :: t()) ::
@@ -193,34 +197,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end
   end
 
-  def reiden_handler(st, fid) do
-    st1 =
-      st
-      |> reset_state(:reiden)
-      |> set_fragment(fid)
-      |> set_reiden_acks_expected(MapSet.size(st.children))
-
-    if MapSet.size(st1.children) == 0 do
-      if is_root?(st1) do
-        # I'm the root: start FINDMOE
-        # safe_send(st1.id, st1.id, {:FINDMOE, fid})
-        st1 = start_new_findmoe_round(st1)
-        st1
-      else
-        # I'm a leaf: send REIDEN_ACK to parent
-        safe_send(st1.id, st1.id, {:REIDEN_ACK, fid})
-        st1
-      end
-    else
-      # Send to children
-      Enum.each(st1.children, fn c ->
-        safe_send(st1.id, c, {:REIDEN, fid})
-      end)
-
-      st1
-    end
-  end
-
   # (2) Response to FAILURE<fid>
   def handle_message(_from, {:FAILURE, fid}, st) do
     cond do
@@ -236,12 +212,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
         send_parent(st, {:FAILURE, fid})
         {:noreply, st}
     end
-  end
-
-  def start_new_findmoe_round(st) do
-    st = %{st | find_moe_round: st.find_moe_round + 1}
-    safe_send(st.id, st.id, {:FINDMOE, st.fragment_id, st.find_moe_round})
-    st
   end
 
   # (3) Response to REIDEN<fid> (broadcast down); reply with REIDEN_ACK at leaves
@@ -321,15 +291,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
       {:noreply, st1}
     else
       {:noreply, st}
-    end
-  end
-
-  @spec update_local_moe(t(), moe(), node_id()) :: t()
-  defp update_local_moe(st, edge, reporter) do
-    if less_or_equal?(edge, st.local_moe) do
-      %{st | local_moe: edge, reporter_for_moe: reporter}
-    else
-      st
     end
   end
 
@@ -450,6 +411,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   ## ——— Helpers ———
 
+  defp gen_fid(weight, node_id), do: {weight, node_id}
+
   defp become_root(st), do: %{st | parent: nil}
 
   defp remove_child(st, child), do: %{st | children: MapSet.delete(st.children, child)}
@@ -461,16 +424,44 @@ defmodule NetworkSim.Protocol.DynamicMST do
   defp set_reiden_acks_expected(st, n), do: %{st | reiden_acks_expected: n}
 
   defp dec_reiden_ack(%{reiden_acks_expected: n} = st),
-    do: %{st | reiden_acks_expected: max(n - 1, 0)}
+    do: %{st | reiden_acks_expected: n - 1}
 
-  defp set_find_acks_expected(st, n) do
-    # Logger.debug("Setting find_acks_expected to #{n} for node #{st.id}")
-    %{st | find_acks_expected: n}
+  defp set_find_acks_expected(st, n), do: %{st | find_acks_expected: n}
+
+  defp dec_find_ack(%{find_acks_expected: n} = st), do: %{st | find_acks_expected: max(n - 1, 0)}
+
+  defp reiden_handler(st, fid) do
+    st1 =
+      st
+      |> reset_state(:reiden)
+      |> set_fragment(fid)
+      |> set_reiden_acks_expected(MapSet.size(st.children))
+
+    if MapSet.size(st1.children) == 0 do
+      if is_root?(st1) do
+        # I'm the root: start FINDMOE
+        # safe_send(st1.id, st1.id, {:FINDMOE, fid})
+        st1 = start_new_findmoe_round(st1)
+        st1
+      else
+        # I'm a leaf: send REIDEN_ACK to parent
+        safe_send(st1.id, st1.id, {:REIDEN_ACK, fid})
+        st1
+      end
+    else
+      # Send to children
+      Enum.each(st1.children, fn c ->
+        safe_send(st1.id, c, {:REIDEN, fid})
+      end)
+
+      st1
+    end
   end
 
-  defp dec_find_ack(%{find_acks_expected: n} = st) do
-    # Logger.debug("Decrementing find_acks_expected from #{n} for node #{st.id}")
-    %{st | find_acks_expected: max(n - 1, 0)}
+  defp start_new_findmoe_round(st) do
+    st = %{st | find_moe_round: st.find_moe_round + 1}
+    safe_send(st.id, st.id, {:FINDMOE, st.fragment_id, st.find_moe_round})
+    st
   end
 
   ## TEST phase
@@ -483,8 +474,18 @@ defmodule NetworkSim.Protocol.DynamicMST do
     %{st | test_pending: out_neighs, local_moe: :none}
   end
 
+  @spec remove_pending(t(), node_id()) :: t()
   defp remove_pending(st, n) do
     %{st | test_pending: MapSet.delete(st.test_pending, n)}
+  end
+
+  @spec update_local_moe(t(), moe(), node_id()) :: t()
+  defp update_local_moe(st, edge, reporter) do
+    if less_or_equal?(edge, st.local_moe) do
+      %{st | local_moe: edge, reporter_for_moe: reporter}
+    else
+      st
+    end
   end
 
   defp maybe_report_back(st) do
@@ -545,9 +546,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end
   end
 
-  defp is_tree_link?(st, other) do
-    st.parent == other or MapSet.member?(st.children, other)
-  end
+  defp is_tree_link?(st, other), do: st.parent == other or MapSet.member?(st.children, other)
 
   defp is_root?(st), do: st.parent == nil
 
