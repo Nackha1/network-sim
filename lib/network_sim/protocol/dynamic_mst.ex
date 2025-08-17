@@ -334,32 +334,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end
   end
 
-  defp react_to_moe(st, moe) do
-    case moe do
-      # No outgoing edge: either whole net or disconnected component (paper 4.1 end). We just go sleep.
-      :none ->
-        safe_send(st.id, st.id, {:GOSLEEP, st.fragment_id})
-        st
-
-      chosen ->
-        case st.reporter_for_moe do
-          # moe is incident to root ⇒ proceed directly (appendix (7) will send CONNECT)
-          nil ->
-            send_connect_for(chosen, st)
-
-          reporter ->
-            safe_send(st.id, reporter, {:CHANGE_ROOT, st.fragment_id, chosen})
-
-            %{
-              st
-              | parent: reporter,
-                children: MapSet.delete(st.children, reporter),
-                reporter_for_moe: nil
-            }
-        end
-    end
-  end
-
   # (7) Response to CHANGE-ROOT<fid, moe>
   def handle_message(from, {:CHANGE_ROOT, fid, {:edge, {{u, v}, _w}} = moe}, st) do
     # Orient root-change down toward the endpoint; if incident, emit CONNECT (appendix (7))
@@ -424,7 +398,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
   defp set_reiden_acks_expected(st, n), do: %{st | reiden_acks_expected: n}
 
   defp dec_reiden_ack(%{reiden_acks_expected: n} = st),
-    do: %{st | reiden_acks_expected: n - 1}
+    do: %{st | reiden_acks_expected: max(n - 1, 0)}
 
   defp set_find_acks_expected(st, n), do: %{st | find_acks_expected: n}
 
@@ -464,13 +438,38 @@ defmodule NetworkSim.Protocol.DynamicMST do
     st
   end
 
+  defp react_to_moe(st, moe) do
+    case moe do
+      # No outgoing edge: either whole net or disconnected component (paper 4.1 end). We just go sleep.
+      :none ->
+        safe_send(st.id, st.id, {:GOSLEEP, st.fragment_id})
+        st
+
+      chosen ->
+        case st.reporter_for_moe do
+          # moe is incident to root ⇒ proceed directly (appendix (7) will send CONNECT)
+          nil ->
+            send_connect_for(chosen, st)
+
+          reporter ->
+            safe_send(st.id, reporter, {:CHANGE_ROOT, st.fragment_id, chosen})
+
+            %{
+              st
+              | parent: reporter,
+                children: MapSet.delete(st.children, reporter),
+                reporter_for_moe: nil
+            }
+        end
+    end
+  end
+
   ## TEST phase
 
   defp issue_tests(st) do
     fid = st.fragment_id
     out_neighs = st.neighbors |> MapSet.delete(st.parent) |> MapSet.difference(st.children)
     Enum.each(out_neighs, fn n -> safe_send(st.id, n, {:TEST, fid}) end)
-    # %{st | test_pending: out_neighs, test_results: [], local_moe: :none}
     %{st | test_pending: out_neighs, local_moe: :none}
   end
 
@@ -559,13 +558,9 @@ defmodule NetworkSim.Protocol.DynamicMST do
     end
   end
 
-  defp send_parent(st, msg) when st.parent == nil do
-    safe_send(st.id, st.id, msg)
-  end
+  defp send_parent(%{parent: nil} = st, msg), do: safe_send(st.id, st.id, msg)
 
-  defp send_parent(st, msg) do
-    safe_send(st.id, st.parent, msg)
-  end
+  defp send_parent(st, msg), do: safe_send(st.id, st.parent, msg)
 
   defp safe_send(from, to, msg) do
     case NetworkSim.send(from, to, msg) do
