@@ -2,7 +2,6 @@ defmodule ProtocolTest do
   use ExUnit.Case, async: true
 
   require Logger
-  alias ElixirLS.LanguageServer.Providers.CodeLens.Test
   alias NetworkSim.TestHelper
   alias NetworkSim.Protocol
 

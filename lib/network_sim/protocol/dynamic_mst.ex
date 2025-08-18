@@ -37,6 +37,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
           parent: node_id() | nil,
           children: MapSet.t(node_id()),
           neighbors: MapSet.t(node_id()),
+          # TODO: Keep neighbors weights
 
           # Fragment identity and failure-fsm state
           fragment_id: fragment_id() | nil,
@@ -212,26 +213,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   @impl true
   def handle_message(from, {:PRIVILEGE, fid, w_e}, %{fragment_id: fid} = st) do
-    # if is_root?(st) do
-    #   # if st.curr_privilege == w_e do
-    #   # end
-
-    #   st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
-    #   pending_count = map_size(st.recovery_in_recv)
-
-    #   cond do
-    #     pending_count == 0 ->
-    #       # No more pending recovery messages, go to sleep
-    #       st = st |> set_state(:sleep)
-    #       {:noreply, st}
-
-    #     true ->
-    #       {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
-    #       next = next_in_cycle(st, sender, from)
-    #       safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
-    #       {:noreply, st}
-    #   end
-    # else
     {count, sender, max_weight} = Map.get(st.recovery_in_recv, w_e)
 
     cond do
@@ -259,17 +240,35 @@ defmodule NetworkSim.Protocol.DynamicMST do
           end
 
         next = sender
-        next_weight = edge_weight(st.id, next)
 
-        if next_weight == max_weight do
-          st = %{st | children: MapSet.delete(st.children, next)}
-          # update to stage = 1
-          safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 1})
-          {:noreply, st}
-        else
-          safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 0})
-          {:noreply, st}
-        end
+        st =
+          cond do
+            next_cut?(st, next, max_weight) == true ->
+              # Delete next, no matter what
+              %{st | children: MapSet.delete(st.children, next)}
+
+            true ->
+              # Keep next as child, no matter what
+              %{st | children: MapSet.put(st.children, next)}
+          end
+
+        # update stage if needed
+        next_stage = if next_cut?(st, next, max_weight), do: 1, else: 0
+
+        safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, next_stage})
+        {:noreply, st}
+
+      # if next_weight == max_weight do
+      #   st = %{st | children: MapSet.delete(st.children, next)}
+      #   # update to stage = 1
+      #   safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 1})
+      #   {:noreply, st}
+      # else
+      #   st = %{st | children: MapSet.put(st.children, next)}
+      #   Logger.debug("Debugging state: #{inspect(st)}")
+      #   safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 0})
+      #   {:noreply, st}
+      # end
 
       count == 1 ->
         st =
@@ -285,6 +284,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
               true ->
                 {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
                 next = next_in_cycle(st, sender, from)
+
                 safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
                 %{st | curr_privilege: new_w_e}
             end
@@ -296,8 +296,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
         {:noreply, st}
     end
-
-    # end
   end
 
   @impl true
@@ -332,40 +330,46 @@ defmodule NetworkSim.Protocol.DynamicMST do
     st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
 
     next = next_in_cycle(st, sender, from)
-    next_weight = edge_weight(st.id, next)
+    # Going up, counter-stream in the tree
+    going_up = next == st.parent
 
     cond do
       stage == 0 ->
-        if next_weight == w do
-          st =
-            if next == st.parent do
-              %{st | parent: from}
-            else
+        # Link with the previous part of the cycle, cut will happen later
+        st =
+          if going_up do
+            %{st | parent: from, children: MapSet.delete(st.children, from)}
+          else
+            st
+          end
+
+        st =
+          cond do
+            next_cut?(st, next, w) == true ->
+              # Delete next, no matter what
               %{st | children: MapSet.delete(st.children, next)}
-            end
 
-          # update to stage = 1
-          safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, 1})
-          {:noreply, st}
-        else
-          st =
-            if next == sender do
+            true ->
+              # Keep next as child, no matter what
               %{st | children: MapSet.put(st.children, next)}
-            else
-              %{st | parent: from}
-            end
+          end
 
-          safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, stage})
+        # update stage if needed
+        next_stage = if next_cut?(st, next, w), do: 1, else: stage
 
-          {:noreply, st}
-        end
+        safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, next_stage})
+
+        {:noreply, st}
 
       stage == 1 ->
+        # Delete from, no matter what
+        st = %{st | children: MapSet.delete(st.children, from)}
+
         st =
-          if next == st.parent do
-            %{st | children: MapSet.delete(st.children, sender)}
+          if going_up do
+            st
           else
-            %{st | parent: sender}
+            %{st | parent: next, children: MapSet.delete(st.children, next)}
           end
 
         # update to stage = 2
@@ -373,17 +377,40 @@ defmodule NetworkSim.Protocol.DynamicMST do
         {:noreply, st}
 
       true ->
+        # Link with the next part of the cycle, cut has already happened
         st =
-          if next == sender do
-            %{st | parent: sender}
-          else
+          if going_up do
             %{st | children: MapSet.put(st.children, from)}
+          else
+            %{st | parent: next, children: MapSet.delete(st.children, next)}
           end
 
         safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, stage})
         {:noreply, st}
     end
   end
+
+  defp next_cut?(st, next, w), do: edge_weight(st.id, next) == w
+
+  # defp next_cut?(st, next, w) do
+  #   next_weight = edge_weight(st.id, next)
+
+  #   if next_weight == w do
+  #     # Delete next, no matter what
+  #     st = %{st | children: MapSet.delete(st.children, next)}
+
+  #     # update to stage = 1
+  #     safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, 1})
+  #     st
+  #   else
+  #     # Keep next as child, no matter what
+  #     st = %{st | children: MapSet.put(st.children, next)}
+
+  #     safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, stage})
+
+  #     st
+  #   end
+  # end
 
   @impl true
   def handle_message(_from, {:REPLACE, fid, _w_e, _w, _starter}, st) do
