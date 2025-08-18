@@ -2,63 +2,115 @@ defmodule ProtocolTest do
   use ExUnit.Case, async: true
 
   require Logger
-  alias NetworkSim.Dot
+  alias ElixirLS.LanguageServer.Providers.CodeLens.Test
+  alias NetworkSim.TestHelper
   alias NetworkSim.Protocol
 
   setup do
     File.mkdir_p("tmp/dmst")
   end
 
-  defp show_custom_mst(nodes, links, test_name) do
-    Dot.show_mst(nodes, links, "tmp/dmst/#{test_name}")
-  end
-
-  test "boh" do
+  test "multiple recovery" do
     nodes = [
-      {:a, Protocol.DynamicMST, %{parent: nil, children: [:b, :c]}},
-      {:b, Protocol.DynamicMST, %{parent: :a, children: []}},
-      {:c, Protocol.DynamicMST, %{parent: :a, children: []}}
+      {:root, Protocol.DynamicMST, %{parent: nil, children: [:lca_e_prime]}},
+      {:lca_e_prime, Protocol.DynamicMST, %{parent: :root, children: [:v_prime]}},
+      {:lca_e, Protocol.DynamicMST, %{parent: :lca_e_prime, children: [:u]}},
+      {:x, Protocol.DynamicMST, %{parent: :lca_e, children: [:v, :u_prime]}},
+      {:u, Protocol.DynamicMST, %{parent: :lca_e, children: []}},
+      {:v, Protocol.DynamicMST, %{parent: :x, children: []}},
+      {:u_prime, Protocol.DynamicMST, %{parent: :x, children: []}},
+      {:v_prime, Protocol.DynamicMST, %{parent: :lca_e_prime, children: []}}
     ]
 
     links = [
-      {:a, :b, %{weight: 2}},
-      {:a, :c, %{weight: 3}}
+      {:root, :lca_e_prime, %{weight: 3}},
+      {:lca_e_prime, :v_prime, %{weight: 4}},
+      {:lca_e_prime, :lca_e, %{weight: 5}},
+      {:lca_e, :x, %{weight: 6}},
+      {:lca_e, :u, %{weight: 7}},
+      {:x, :v, %{weight: 8}},
+      {:x, :u_prime, %{weight: 9}}
     ]
 
-    nodes_ids = Enum.map(nodes, &elem(&1, 0))
+    test_name = "mult_rec_in"
+    TestHelper.start(nodes, links, test_name)
 
-    NetworkSim.start_network(nodes, links)
-
-    NetworkSim.enable_link(:b, :c, %{weight: 1})
+    # Simulate a dual recovery scenario
+    NetworkSim.enable_link(:u_prime, :v_prime, %{weight: 1})
+    # NetworkSim.enable_link(:u, :v, %{weight: 2})
 
     Process.sleep(5)
     tree = NetworkSim.get_tree()
 
-    Logger.info("Tree after enabling links: #{inspect(tree, pretty: true)}")
+    Logger.info("Tree: #{inspect(tree, pretty: true)}")
+
+    TestHelper.stop(test_name)
   end
 
-  # test "simple internal link recovery" do
+  # test "boh" do
   #   nodes = [
-  #     {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
-  #     {:b, Protocol.DynamicMST, %{parent: :a, children: [:c, :e]}},
-  #     {:c, Protocol.DynamicMST, %{parent: :b, children: []}},
-  #     {:d, Protocol.DynamicMST, %{parent: :e, children: []}},
-  #     {:e, Protocol.DynamicMST, %{parent: :b, children: [:d]}}
+  #     {:a, Protocol.DynamicMST, %{parent: :e, children: [:b, :c]}},
+  #     {:b, Protocol.DynamicMST, %{parent: :a, children: []}},
+  #     {:c, Protocol.DynamicMST, %{parent: :a, children: []}},
+  #     {:e, Protocol.DynamicMST, %{parent: nil, children: [:a]}}
   #   ]
 
   #   links = [
-  #     {:a, :b, %{weight: 1}},
-  #     {:b, :c, %{weight: 100}},
-  #     {:b, :e, %{weight: 3}},
-  #     {:d, :e, %{weight: 7}},
-  #     # starts as non-tree link
-  #     {:c, :d, %{weight: 4}}
+  #     {:a, :b, %{weight: 2}},
+  #     {:a, :c, %{weight: 3}},
+  #     {:e, :a, %{weight: 4}}
   #   ]
 
-  #   nodes_ids = Enum.map(nodes, &elem(&1, 0))
+  #   # links = [
+  #   #   {:a, :b, %{weight: 2}},
+  #   #   {:a, :c, %{weight: 3}},
+  #   #   {:b, :c, %{weight: 1}}
+  #   # ]
 
   #   NetworkSim.start_network(nodes, links)
+
+  #   NetworkSim.enable_link(:b, :c, %{weight: 1})
+  #   NetworkSim.disable_link(:a, :b)
+
+  #   Process.sleep(5)
+  #   tree = NetworkSim.get_tree()
+
+  #   Logger.info("Tree after enabling links: #{inspect(tree, pretty: true)}")
+
+  #   TestHelper.show_custom_tree(
+  #     NetworkSim.Router.nodes(),
+  #     NetworkSim.Router.links(),
+  #     tree,
+  #     "single_internal_recovery"
+  #   )
+
+  #   NetworkSim.stop_network()
   # end
+
+  test "simple internal link recovery" do
+    nodes = [
+      {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
+      {:b, Protocol.DynamicMST, %{parent: :a, children: [:c, :e]}},
+      {:c, Protocol.DynamicMST, %{parent: :b, children: []}},
+      {:d, Protocol.DynamicMST, %{parent: :e, children: []}},
+      {:e, Protocol.DynamicMST, %{parent: :b, children: [:d]}}
+    ]
+
+    links = [
+      {:a, :b, %{weight: 1}},
+      {:b, :c, %{weight: 100}},
+      {:b, :e, %{weight: 3}},
+      {:d, :e, %{weight: 7}}
+    ]
+
+    test_name = "single_rec_in"
+    TestHelper.start(nodes, links, test_name)
+
+    NetworkSim.enable_link(:c, :d, %{weight: 4})
+
+    Process.sleep(5)
+    TestHelper.stop(test_name)
+  end
 
   # test "dynamic MST" do
   #   nodes = [

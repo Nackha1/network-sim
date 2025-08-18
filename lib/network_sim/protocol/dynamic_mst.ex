@@ -167,7 +167,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
           send_parent(st, {:RECOVERY_IN, fid, w_e, w_prime})
           st
 
-        is_nil(st.curr_privilege) ->
+        is_root?(st) and is_nil(st.curr_privilege) ->
           safe_send(st.id, from, {:PRIVILEGE, fid, w_e})
           %{st | curr_privilege: w_e}
 
@@ -205,7 +205,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   @impl true
-  def handle_message(_from, {:RECOVERY_IN, fid}, st) do
+  def handle_message(_from, {:RECOVERY_IN, fid, _w_e, _w}, st) do
     Logger.warning("Discarding old :RECOVERY_IN message, fid=#{inspect(fid)}")
     {:noreply, st}
   end
@@ -245,13 +245,13 @@ defmodule NetworkSim.Protocol.DynamicMST do
             cond do
               pending_count == 0 ->
                 # No more pending recovery messages, go to sleep
-                st |> set_state(:sleep)
+                %{st | curr_privilege: nil} |> set_state(:sleep)
 
               true ->
                 {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
                 next = next_in_cycle(st, sender, from)
                 safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
-                st
+                %{st | curr_privilege: new_w_e}
             end
           else
             send_parent(st, {:PRIVILEGE, fid, w_e})
@@ -272,8 +272,28 @@ defmodule NetworkSim.Protocol.DynamicMST do
         end
 
       count == 1 ->
-        next = next_in_cycle(st, sender, from)
-        safe_send(st.id, next, {:PRIVILEGE, fid, w_e})
+        st =
+          if is_root?(st) do
+            st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
+            pending_count = map_size(st.recovery_in_recv)
+
+            cond do
+              pending_count == 0 ->
+                # No more pending recovery messages, go to sleep
+                %{st | curr_privilege: nil} |> set_state(:sleep)
+
+              true ->
+                {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
+                next = next_in_cycle(st, sender, from)
+                safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
+                %{st | curr_privilege: new_w_e}
+            end
+          else
+            next = next_in_cycle(st, sender, from)
+            safe_send(st.id, next, {:PRIVILEGE, fid, w_e})
+            st
+          end
+
         {:noreply, st}
     end
 
@@ -300,7 +320,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
         else: st
 
     Logger.info("Replace cycle for #{inspect(w_e)} finished")
-    {:noreply, st}
+    {:noreply, %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}}
   end
 
   @impl true
@@ -308,6 +328,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
     st = st |> set_state(:sleep)
 
     {_count, sender, _max_weight} = Map.get(st.recovery_in_recv, w_e)
+
+    st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
 
     next = next_in_cycle(st, sender, from)
     next_weight = edge_weight(st.id, next)

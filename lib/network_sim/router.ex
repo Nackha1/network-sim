@@ -59,6 +59,12 @@ defmodule NetworkSim.Router do
   def nodes(), do: GenServer.call(__MODULE__, {:nodes})
 
   @doc """
+  Get the current node IDs.
+  """
+  @spec links() :: [edge_attrs()]
+  def links(), do: GenServer.call(__MODULE__, {:links})
+
+  @doc """
     Read attributes for an undirected edge `{a,b}`.
     Returns `nil` if none are set.
   """
@@ -118,6 +124,11 @@ defmodule NetworkSim.Router do
   @impl true
   def handle_call({:nodes}, _from, state) do
     {:reply, Map.keys(state.graph), state}
+  end
+
+  @impl true
+  def handle_call({:links}, _from, state) do
+    {:reply, state.attrs |> Enum.map(fn {{u, v}, attrs} -> {u, v, attrs} end), state}
   end
 
   @impl true
