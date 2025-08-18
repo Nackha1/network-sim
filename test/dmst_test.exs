@@ -13,64 +13,104 @@ defmodule ProtocolTest do
     Dot.show_mst(nodes, links, "tmp/dmst/#{test_name}")
   end
 
-  test "dynamic MST" do
+  test "boh" do
     nodes = [
       {:a, Protocol.DynamicMST, %{parent: nil, children: [:b, :c]}},
       {:b, Protocol.DynamicMST, %{parent: :a, children: []}},
-      {:c, Protocol.DynamicMST, %{parent: :a, children: [:d, :e]}},
-      {:d, Protocol.DynamicMST, %{parent: :c, children: []}},
-      {:e, Protocol.DynamicMST, %{parent: :c, children: []}}
+      {:c, Protocol.DynamicMST, %{parent: :a, children: []}}
     ]
 
     links = [
-      {:a, :b, %{weight: 8}},
-      {:a, :c, %{weight: 1}},
-      {:c, :d, %{weight: 2}},
-      {:c, :e, %{weight: 3}},
-      {:a, :d, %{weight: 5}},
-      {:a, :e, %{weight: 6}}
+      {:a, :b, %{weight: 2}},
+      {:a, :c, %{weight: 3}}
     ]
 
-    # nodes = [
-    #   {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
-    #   {:b, Protocol.DynamicMST, %{parent: :a, children: []}}
-    # ]
-
-    # links = [
-    #   {:a, :b, %{weight: 3}}
-    # ]
-
-    test_name = "dynamic_mst_start"
     nodes_ids = Enum.map(nodes, &elem(&1, 0))
-    show_custom_mst(nodes_ids, links, test_name)
 
     NetworkSim.start_network(nodes, links)
 
-    NetworkSim.disable_link(:a, :c)
-    NetworkSim.disable_link(:a, :d)
-    NetworkSim.disable_link(:a, :b)
-    NetworkSim.enable_link(:a, :c)
+    NetworkSim.enable_link(:b, :c, %{weight: 1})
 
-    Process.sleep(100)
-
+    Process.sleep(5)
     tree = NetworkSim.get_tree()
 
-    Logger.info("Tree after disabling links: #{inspect(tree, pretty: true)}")
-
-    test_name = "dynamic_mst_end"
-
-    show_custom_mst(
-      nodes_ids,
-      (links --
-         [{:a, :c, %{weight: 1}}, {:a, :d, %{weight: 5}}, {:a, :b, %{weight: 8}}]) ++
-        [{:a, :c, %{weight: 1}}],
-      test_name
-    )
-
-    # Enum.each(nodes_ids, fn n ->
-    #   IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
-    # end)
-
-    NetworkSim.stop_network()
+    Logger.info("Tree after enabling links: #{inspect(tree, pretty: true)}")
   end
+
+  # test "simple internal link recovery" do
+  #   nodes = [
+  #     {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
+  #     {:b, Protocol.DynamicMST, %{parent: :a, children: [:c, :e]}},
+  #     {:c, Protocol.DynamicMST, %{parent: :b, children: []}},
+  #     {:d, Protocol.DynamicMST, %{parent: :e, children: []}},
+  #     {:e, Protocol.DynamicMST, %{parent: :b, children: [:d]}}
+  #   ]
+
+  #   links = [
+  #     {:a, :b, %{weight: 1}},
+  #     {:b, :c, %{weight: 100}},
+  #     {:b, :e, %{weight: 3}},
+  #     {:d, :e, %{weight: 7}},
+  #     # starts as non-tree link
+  #     {:c, :d, %{weight: 4}}
+  #   ]
+
+  #   nodes_ids = Enum.map(nodes, &elem(&1, 0))
+
+  #   NetworkSim.start_network(nodes, links)
+  # end
+
+  # test "dynamic MST" do
+  #   nodes = [
+  #     {:a, Protocol.DynamicMST, %{parent: nil, children: [:b, :c]}},
+  #     {:b, Protocol.DynamicMST, %{parent: :a, children: []}},
+  #     {:c, Protocol.DynamicMST, %{parent: :a, children: [:d, :e]}},
+  #     {:d, Protocol.DynamicMST, %{parent: :c, children: []}},
+  #     {:e, Protocol.DynamicMST, %{parent: :c, children: []}}
+  #   ]
+
+  #   links = [
+  #     {:a, :b, %{weight: 8}},
+  #     {:a, :c, %{weight: 1}},
+  #     {:c, :d, %{weight: 2}},
+  #     {:c, :e, %{weight: 3}},
+  #     {:a, :d, %{weight: 5}},
+  #     {:a, :e, %{weight: 6}}
+  #   ]
+
+  #   test_name = "dynamic_mst_start"
+  #   nodes_ids = Enum.map(nodes, &elem(&1, 0))
+  #   show_custom_mst(nodes_ids, links, test_name)
+
+  #   NetworkSim.start_network(nodes, links)
+
+  #   # NetworkSim.disable_link(:a, :c)
+  #   NetworkSim.disable_link(:a, :d)
+  #   # NetworkSim.disable_link(:a, :e)
+  #   # NetworkSim.disable_link(:a, :b)
+  #   NetworkSim.enable_link(:a, :d)
+  #   # NetworkSim.enable_link(:a, :e)
+
+  #   Process.sleep(100)
+
+  #   tree = NetworkSim.get_tree()
+
+  #   Logger.info("Tree after disabling links: #{inspect(tree, pretty: true)}")
+
+  #   test_name = "dynamic_mst_end"
+
+  #   show_custom_mst(
+  #     nodes_ids,
+  #     (links --
+  #        [{:a, :c, %{weight: 1}}, {:a, :d, %{weight: 5}}, {:a, :b, %{weight: 8}}]) ++
+  #       [{:a, :c, %{weight: 1}}],
+  #     test_name
+  #   )
+
+  #   # Enum.each(nodes_ids, fn n ->
+  #   #   IO.puts("#{inspect(NetworkSim.get_raw_state(n), pretty: true)}")
+  #   # end)
+
+  #   NetworkSim.stop_network()
+  # end
 end

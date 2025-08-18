@@ -87,22 +87,26 @@ defmodule NetworkSim do
   def neighbors(id), do: Router.neighbors(id)
 
   @doc """
+  Check if `{a, b}` is currently enabled.
+  """
+  @spec link_enabled?(node_id(), node_id()) :: boolean()
+  def link_enabled?(a, b), do: Router.link_enabled?(a, b)
+
+  # =====================
+  #  Topology modifications
+  # =====================
+
+  @doc """
   Enable an undirected link `{a, b}` (both directions).
   """
-  @spec enable_link(node_id(), node_id()) :: :ok
-  def enable_link(a, b), do: Router.enable_link(a, b)
+  # @spec enable_link(node_id(), node_id()) :: :ok
+  def enable_link(a, b, attrs \\ %{}), do: Router.enable_link(a, b, attrs)
 
   @doc """
   Disable an undirected link `{a, b}` (both directions).
   """
   @spec disable_link(node_id(), node_id()) :: :ok
   def disable_link(a, b), do: Router.disable_link(a, b)
-
-  @doc """
-  Check if `{a, b}` is currently enabled.
-  """
-  @spec link_enabled?(node_id(), node_id()) :: boolean()
-  def link_enabled?(a, b), do: Router.link_enabled?(a, b)
 
   # ===============
   #  Messaging API
@@ -143,17 +147,6 @@ defmodule NetworkSim do
     end
   end
 
-  # def get_tree() do
-  #   nodes = Router.nodes()
-  #   res = []
-
-  #   Enum.each(nodes, fn node_id ->
-  #     res = res ++ Map.take(NetworkSim.Node.state(node_id), [:id, :parent, :children])
-  #     # Logger.debug("#{inspect(res)}")
-  #   end)
-
-  #   res
-  # end
   @spec get_tree() :: [map()]
   def get_tree() do
     Router.nodes()

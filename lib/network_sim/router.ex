@@ -80,8 +80,9 @@ defmodule NetworkSim.Router do
   @doc """
   Enable an **undirected** link between `a` and `b`.
   """
-  @spec enable_link(node_id(), node_id()) :: :ok
-  def enable_link(a, b), do: GenServer.call(__MODULE__, {:enable, undirected(a, b)})
+  @spec enable_link(node_id(), node_id(), map()) :: term()
+  def enable_link(a, b, attrs),
+    do: GenServer.call(__MODULE__, {:enable, undirected(a, b), attrs})
 
   @doc """
   Route a `payload` from `from` to `to` if:
@@ -153,26 +154,48 @@ defmodule NetworkSim.Router do
   end
 
   @impl true
-  def handle_call({:enable, e}, _from, %{graph: g, disabled: dis, attrs: attrs} = state) do
-    {a, b} = e
+  def handle_call(
+        {:enable, {a, b} = e, attrs},
+        _from,
+        %{graph: g, disabled: dis, attrs: old_attrs} = state
+      ) do
+    dis2 = MapSet.delete(dis, e)
 
-    # Only act if edge is in the topology
-    if edge_exists?(g, a, b) do
-      if MapSet.member?(dis, e) do
-        dis2 = MapSet.delete(dis, e)
-        meta = %{edge: e, attrs: Map.get(attrs, e)}
+    g2 =
+      g
+      |> Map.update(a, MapSet.new([b]), &MapSet.put(&1, b))
+      |> Map.update(b, MapSet.new([a]), &MapSet.put(&1, a))
 
-        notify(a, {:router_link_up, b, meta})
-        notify(b, {:router_link_up, a, meta})
-
-        {:reply, :ok, %{state | disabled: dis2}}
+    attrs2 =
+      if map_size(attrs) == 0 do
+        old_attrs
       else
-        # already enabled
-        {:reply, {:warning, :link_already_enabled}, state}
+        Map.put(old_attrs, e, attrs)
       end
-    else
-      {:reply, {:error, :unknown_edge}, state}
-    end
+
+    meta = %{edge: e, attrs: Map.get(attrs2, e)}
+
+    notify(a, {:router_link_up, b, meta})
+    notify(b, {:router_link_up, a, meta})
+
+    {:reply, :ok, %{state | graph: g2, disabled: dis2, attrs: attrs2}}
+
+    # if edge_exists?(g, a, b) do
+    #   if MapSet.member?(dis, e) do
+    #     dis2 = MapSet.delete(dis, e)
+    #     meta = %{edge: e, attrs: Map.get(attrs, e)}
+
+    #     notify(a, {:router_link_up, b, meta})
+    #     notify(b, {:router_link_up, a, meta})
+
+    #     {:reply, :ok, %{state | disabled: dis2}}
+    #   else
+    #     # already enabled
+    #     {:reply, {:warning, :link_already_enabled}, state}
+    #   end
+    # else
+    #   {:reply, {:error, :unknown_edge}, state}
+    # end
   end
 
   @impl true
