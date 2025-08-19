@@ -100,32 +100,40 @@ defmodule NetworkSim.Node do
       ) do
     case from do
       :router ->
-        Logger.warning("Received router event #{inspect(payload)}", module: __MODULE__)
+        Logger.warning(
+          "Received router event #{inspect(payload)}",
+          module: __MODULE__
+        )
 
       ^id ->
-        Logger.debug("Received self-message (#{inspect(payload)})", module: __MODULE__)
+        Logger.debug(
+          "Received self-message (#{inspect(payload)})",
+          module: __MODULE__
+        )
 
       _ ->
-        Logger.info("Received message from=#{inspect(from)} payload=#{inspect(payload)}",
+        Logger.info(
+          "Received message from=#{inspect(from)} payload=#{inspect(payload)}",
           module: __MODULE__
         )
     end
 
-    # Logger.info("Received from=#{inspect(from)} payload=#{inspect(payload)}",
-    #   module: __MODULE__
-    # )
-
     # Always record deliveries (handy for tests/inspection)
     new_state = %{state | inbox: [{from, payload} | inbox]}
 
-    case pm.handle_message(from, payload, ps) do
-      {:noreply, ps2} ->
-        {:noreply, %{new_state | proto_state: ps2}}
+    st =
+      case pm.handle_message(from, payload, ps) do
+        {:noreply, ps2} ->
+          %{new_state | proto_state: ps2}
 
-      {:reply, reply_payload, ps2} ->
-        # Reply goes back through the router so topology rules still apply.
-        _ = NetworkSim.send(id, from, reply_payload)
-        {:noreply, %{new_state | proto_state: ps2}}
-    end
+        {:reply, reply_payload, ps2} ->
+          # Reply goes back through the router so topology rules still apply.
+          _ = NetworkSim.send(id, from, reply_payload)
+          %{new_state | proto_state: ps2}
+      end
+
+    # Logger.debug("State after handling latest message \n#{inspect(st, pretty: true)}")
+
+    {:noreply, st}
   end
 end

@@ -36,7 +36,10 @@ defmodule ProtocolTest do
 
     # Simulate a dual recovery scenario
     NetworkSim.enable_link(:u_prime, :v_prime, %{weight: 1})
-    # NetworkSim.enable_link(:u, :v, %{weight: 2})
+    NetworkSim.enable_link(:u, :v, %{weight: 2})
+    Process.sleep(10)
+    # NetworkSim.disable_link(:lca_e, :x)
+    # NetworkSim.disable_link(:v_prime, :lca_e_prime)
 
     Process.sleep(5)
     tree = NetworkSim.get_tree()
@@ -88,26 +91,50 @@ defmodule ProtocolTest do
 
   test "simple internal link recovery" do
     nodes = [
-      {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
+      {:a, Protocol.DynamicMST, %{parent: :f, children: [:b]}},
       {:b, Protocol.DynamicMST, %{parent: :a, children: [:c, :e]}},
       {:c, Protocol.DynamicMST, %{parent: :b, children: []}},
       {:d, Protocol.DynamicMST, %{parent: :e, children: []}},
-      {:e, Protocol.DynamicMST, %{parent: :b, children: [:d]}}
+      {:e, Protocol.DynamicMST, %{parent: :b, children: [:d]}},
+      {:f, Protocol.DynamicMST, %{parent: nil, children: [:a]}}
     ]
+
+    # nodes = [
+    #   {:a, Protocol.DynamicMST, %{parent: nil, children: [:b]}},
+    #   {:b, Protocol.DynamicMST, %{parent: :a, children: [:c]}},
+    #   {:c, Protocol.DynamicMST, %{parent: :b, children: []}},
+    #   {:d, Protocol.DynamicMST, %{parent: :a, children: []}}
+    # ]
 
     links = [
       {:a, :b, %{weight: 1}},
       {:b, :c, %{weight: 100}},
       {:b, :e, %{weight: 3}},
-      {:d, :e, %{weight: 7}}
+      {:d, :e, %{weight: 7}},
+      {:a, :f, %{weight: 60}}
     ]
+
+    # links = [
+    #   {:a, :b, %{weight: 1}},
+    #   {:b, :c, %{weight: 100}},
+    #   {:a, :d, %{weight: 3}}
+    # ]
 
     test_name = "single_rec_in"
     TestHelper.start(nodes, links, test_name)
 
     NetworkSim.enable_link(:c, :d, %{weight: 4})
+    # Process.sleep(5)
+    NetworkSim.enable_link(:a, :c, %{weight: 1.5})
+    # Process.sleep(5)
+    NetworkSim.enable_link(:b, :d, %{weight: 2})
+    # Process.sleep(10)
+    # NetworkSim.disable_link(:b, :e)
 
     Process.sleep(5)
+    tree = NetworkSim.get_tree()
+
+    Logger.info("Tree: #{inspect(tree, pretty: true)}")
     TestHelper.stop(test_name)
   end
 

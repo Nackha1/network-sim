@@ -63,6 +63,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
           # Recovery tracking
           recovery_in_recv: %{edge_id() => {non_neg_integer(), node_id(), weight()}},
+          recovery_in_sent: MapSet.t(edge_id()),
           curr_privilege: edge_id() | nil
         }
 
@@ -93,6 +94,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
       connect_sent: MapSet.new(),
       connect_recv: MapSet.new(),
       recovery_in_recv: Map.new(),
+      recovery_in_sent: MapSet.new(),
       curr_privilege: nil
     }
   end
@@ -116,16 +118,18 @@ defmodule NetworkSim.Protocol.DynamicMST do
     w_e = edge_weight(st.id, from)
     w_prime = Enum.max([w_e, w_e])
 
-    send_parent(st, {:RECOVERY_IN, fid, w_e, w_prime})
+    st = maybe_propagate_recovery(st, from, fid, w_e, w_prime)
+    # send_parent(st, {:RECOVERY_IN, fid, w_e, w_prime})
 
-    {:noreply,
-     %{
-       st
-       | recovery_in_recv:
-           Map.update(st.recovery_in_recv, w_e, {1, from, w_prime}, fn {count, sender, old_w} ->
-             {count + 1, sender, Enum.max([old_w, w_prime])}
-           end)
-     }}
+    # {:noreply,
+    #  %{
+    #    st
+    #    | recovery_in_recv:
+    #        Map.update(st.recovery_in_recv, w_e, {1, from, w_prime}, fn {count, sender, old_w} ->
+    #          {count + 1, sender, Enum.max([old_w, w_prime])}
+    #        end)
+    #  }}
+    {:noreply, st |> recv_new_recovery(from, w_e, w_prime)}
   end
 
   @impl true
@@ -162,9 +166,37 @@ defmodule NetworkSim.Protocol.DynamicMST do
     st = st |> set_state(:recover)
     w_prime = Enum.max([w, edge_weight(st.id, from)])
 
+    st = maybe_propagate_recovery(st, from, fid, w_e, w_prime)
+
+    {:noreply, st |> recv_new_recovery(from, w_e, w_prime)}
+  end
+
+  defp recv_new_recovery(st, from, w_e, w_prime) do
+    if from == st.id do
+      st
+    else
+      %{
+        st
+        | recovery_in_recv:
+            Map.update(st.recovery_in_recv, w_e, {1, from, w_prime}, fn {count, sender, old_w} ->
+              {count + 1, sender, Enum.max([old_w, w_prime])}
+            end)
+      }
+    end
+  end
+
+  defp maybe_propagate_recovery(st, from, fid, w_e, w_prime) do
+    if MapSet.size(st.recovery_in_sent) != 0 do
+      st
+    else
+      propagate_recovery(st, from, fid, w_e, w_prime)
+    end
+  end
+
+  defp propagate_recovery(st, from, fid, w_e, w_prime) do
     st =
       cond do
-        not is_root?(st) and map_size(st.recovery_in_recv) == 0 ->
+        not is_root?(st) ->
           send_parent(st, {:RECOVERY_IN, fid, w_e, w_prime})
           st
 
@@ -176,33 +208,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
           st
       end
 
-    # st =
-    #   if not is_root?(st) do
-    #     if map_size(st.recovery_in_recv) == 0 do
-    #       send_parent(st, {:RECOVERY_IN, fid, w_e, w_prime})
-    #       st
-    #     end
-
-    #     st
-    #   else
-    #     # I'm the root: send PRIVILEGE to the next node in the cycle
-    #     st =
-    #       if is_nil(st.curr_privilege) do
-    #         safe_send(st.id, from, {:PRIVILEGE, fid, w_e})
-    #         %{st | curr_privilege: w_e}
-    #       end
-
-    #     st
-    #   end
-
-    {:noreply,
-     %{
-       st
-       | recovery_in_recv:
-           Map.update(st.recovery_in_recv, w_e, {1, from, w_prime}, fn {count, sender, old_w} ->
-             {count + 1, sender, Enum.max([old_w, w_prime])}
-           end)
-     }}
+    %{st | recovery_in_sent: MapSet.put(st.recovery_in_sent, w_e)}
   end
 
   @impl true
@@ -215,30 +221,15 @@ defmodule NetworkSim.Protocol.DynamicMST do
   def handle_message(from, {:PRIVILEGE, fid, w_e}, %{fragment_id: fid} = st) do
     {count, sender, max_weight} = Map.get(st.recovery_in_recv, w_e)
 
+    Logger.debug(
+      "Handling PRIVILEGE message from=#{inspect(from)} fid=#{inspect(fid)} w_e=#{inspect(w_e)}, state=#{inspect(st, pretty: true)}"
+    )
+
     cond do
+      # No serialization is necessary, start running the replace process
       count == 2 ->
-        # No serialization is necessary, start running the replace process
-        st =
-          if is_root?(st) do
-            st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
-            pending_count = map_size(st.recovery_in_recv)
-
-            cond do
-              pending_count == 0 ->
-                # No more pending recovery messages, go to sleep
-                %{st | curr_privilege: nil} |> set_state(:sleep)
-
-              true ->
-                {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
-                next = next_in_cycle(st, sender, from)
-                safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
-                %{st | curr_privilege: new_w_e}
-            end
-          else
-            send_parent(st, {:PRIVILEGE, fid, w_e})
-            st
-          end
-
+        # I am the lca of the two nodes
+        st = %{st | curr_privilege: w_e}
         next = sender
 
         st =
@@ -252,28 +243,74 @@ defmodule NetworkSim.Protocol.DynamicMST do
               %{st | children: MapSet.put(st.children, next)}
           end
 
-        # update stage if needed
+        # Update stage if needed
         next_stage = if next_cut?(st, next, max_weight), do: 1, else: 0
 
         safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, next_stage})
-        {:noreply, st}
 
-      # if next_weight == max_weight do
-      #   st = %{st | children: MapSet.delete(st.children, next)}
-      #   # update to stage = 1
-      #   safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 1})
-      #   {:noreply, st}
-      # else
-      #   st = %{st | children: MapSet.put(st.children, next)}
-      #   Logger.debug("Debugging state: #{inspect(st)}")
-      #   safe_send(st.id, next, {:REPLACE, fid, w_e, max_weight, st.id, 0})
-      #   {:noreply, st}
-      # end
+        st =
+          if is_root?(st) do
+            st = %{
+              st
+              | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+                recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+            }
+
+            pending_count = map_size(st.recovery_in_recv)
+
+            # Check if another replace can start
+            cond do
+              pending_count == 0 ->
+                # No more pending recovery messages, go to sleep
+                %{st | curr_privilege: nil} |> set_state(:sleep)
+
+              true ->
+                {new_w_e, {_count, sender, _max_weight}} = st.recovery_in_recv |> Enum.at(0)
+                next = next_in_cycle(st, sender, from)
+                safe_send(st.id, next, {:PRIVILEGE, fid, new_w_e})
+                %{st | curr_privilege: new_w_e}
+            end
+          else
+            # Return privilege to root
+            send_parent(st, {:PRIVILEGE, fid, w_e})
+
+            st = %{
+              st
+              | curr_privilege: nil,
+                recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+                recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+            }
+
+            st =
+              case st.recovery_in_recv |> Map.to_list() do
+                [{new_w_e, {_count, sender, max_weight}} | _rest] ->
+                  st |> propagate_recovery(sender, fid, new_w_e, max_weight)
+
+                _ ->
+                  st
+              end
+
+            # st |> propagate_recovery(sender, fid, new_w_e, max_weight)
+            st
+            # %{
+            #   st
+            #   | curr_privilege: nil,
+            #     recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+            #     recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+            # }
+          end
+
+        {:noreply, st}
 
       count == 1 ->
         st =
-          if is_root?(st) do
-            st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
+          if is_root?(st) and from != st.id do
+            st = %{
+              st
+              | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+                recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+            }
+
             pending_count = map_size(st.recovery_in_recv)
 
             cond do
@@ -289,8 +326,50 @@ defmodule NetworkSim.Protocol.DynamicMST do
                 %{st | curr_privilege: new_w_e}
             end
           else
-            next = next_in_cycle(st, sender, from)
-            safe_send(st.id, next, {:PRIVILEGE, fid, w_e})
+            st =
+              if st.curr_privilege == w_e do
+                # Return privilege to root
+                send_parent(st, {:PRIVILEGE, fid, w_e})
+
+                st = %{
+                  st
+                  | curr_privilege: nil,
+                    recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+                    recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+                }
+
+                st =
+                  case st.recovery_in_recv |> Map.to_list() do
+                    [{new_w_e, {_count, sender, max_weight}} | _rest] ->
+                      st |> propagate_recovery(sender, fid, new_w_e, max_weight)
+
+                    _ ->
+                      st
+                  end
+
+                st
+                # {new_w_e, {_count, sender, max_weight}} = st.recovery_in_recv |> Enum.at(0)
+
+                # st |> propagate_recovery(sender, fid, new_w_e, max_weight)
+              else
+                st = %{st | curr_privilege: w_e}
+
+                st =
+                  cond do
+                    MapSet.member?(st.recovery_in_sent, w_e) ->
+                      #     next = next_in_cycle(st, sender, from)
+                      # safe_send(st.id, next, {:PRIVILEGE, fid, w_e})
+                      st
+
+                    true ->
+                      st |> propagate_recovery(from, fid, w_e, max_weight)
+                  end
+
+                next = next_in_cycle(st, sender, from)
+                safe_send(st.id, next, {:PRIVILEGE, fid, w_e})
+                st
+              end
+
             st
           end
 
@@ -299,8 +378,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
   end
 
   @impl true
-  def handle_message(_from, {:PRIVILEGE, fid}, st) do
-    Logger.warning("Discarding old :PRIVILEGE message, fid=#{inspect(fid)}")
+  def handle_message(_from, {:PRIVILEGE, fid, w_e}, st) do
+    Logger.warning("Discarding old :PRIVILEGE message, fid=#{inspect(fid)} w_e=#{inspect(w_e)}")
     {:noreply, st}
   end
 
@@ -310,6 +389,7 @@ defmodule NetworkSim.Protocol.DynamicMST do
         {:REPLACE, fid, w_e, _w, starter, stage},
         %{id: starter, fragment_id: fid} = st
       ) do
+    # st = %{st | curr_privilege: nil} |> set_state(:sleep)
     st = st |> set_state(:sleep)
 
     st =
@@ -318,16 +398,27 @@ defmodule NetworkSim.Protocol.DynamicMST do
         else: st
 
     Logger.info("Replace cycle for #{inspect(w_e)} finished")
-    {:noreply, %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}}
+
+    {:noreply,
+     %{
+       st
+       | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+         recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+     }}
   end
 
   @impl true
   def handle_message(from, {:REPLACE, fid, w_e, w, starter, stage}, %{fragment_id: fid} = st) do
+    # st = %{st | curr_privilege: nil} |> set_state(:sleep)
     st = st |> set_state(:sleep)
 
     {_count, sender, _max_weight} = Map.get(st.recovery_in_recv, w_e)
 
-    st = %{st | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e)}
+    st = %{
+      st
+      | recovery_in_recv: Map.delete(st.recovery_in_recv, w_e),
+        recovery_in_sent: MapSet.delete(st.recovery_in_sent, w_e)
+    }
 
     next = next_in_cycle(st, sender, from)
     # Going up, counter-stream in the tree
@@ -389,28 +480,6 @@ defmodule NetworkSim.Protocol.DynamicMST do
         {:noreply, st}
     end
   end
-
-  defp next_cut?(st, next, w), do: edge_weight(st.id, next) == w
-
-  # defp next_cut?(st, next, w) do
-  #   next_weight = edge_weight(st.id, next)
-
-  #   if next_weight == w do
-  #     # Delete next, no matter what
-  #     st = %{st | children: MapSet.delete(st.children, next)}
-
-  #     # update to stage = 1
-  #     safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, 1})
-  #     st
-  #   else
-  #     # Keep next as child, no matter what
-  #     st = %{st | children: MapSet.put(st.children, next)}
-
-  #     safe_send(st.id, next, {:REPLACE, fid, w_e, w, starter, stage})
-
-  #     st
-  #   end
-  # end
 
   @impl true
   def handle_message(_from, {:REPLACE, fid, _w_e, _w, _starter}, st) do
@@ -648,6 +717,8 @@ defmodule NetworkSim.Protocol.DynamicMST do
 
   defp next_in_cycle(st, sender, from), do: if(sender == from, do: st.parent, else: sender)
 
+  defp next_cut?(st, next, w), do: edge_weight(st.id, next) == w
+
   defp remove_child(st, child), do: %{st | children: MapSet.delete(st.children, child)}
 
   defp set_fragment(st, fid), do: %{st | fragment_id: fid}
@@ -811,9 +882,19 @@ defmodule NetworkSim.Protocol.DynamicMST do
   defp undirected(a, b), do: if(a <= b, do: {a, b}, else: {b, a})
 
   defp edge_weight(a, b) do
-    case Router.edge_attr(a, b) do
-      %{:weight => w} -> w
-      _ -> :infinity
+    cond do
+      a == b ->
+        0
+
+      true ->
+        case Router.edge_attr(a, b) do
+          %{:weight => w} ->
+            w
+
+          _ ->
+            Logger.warning("Returned :infinity for edge {#{a}, #{b}}")
+            :infinity
+        end
     end
   end
 

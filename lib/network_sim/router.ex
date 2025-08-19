@@ -128,7 +128,10 @@ defmodule NetworkSim.Router do
 
   @impl true
   def handle_call({:links}, _from, state) do
-    {:reply, state.attrs |> Enum.map(fn {{u, v}, attrs} -> {u, v, attrs} end), state}
+    {:reply,
+     state.attrs
+     |> Enum.filter(fn {edge_key, _} -> not MapSet.member?(state.disabled, edge_key) end)
+     |> Enum.map(fn {{u, v}, attrs} -> {u, v, attrs} end), state}
   end
 
   @impl true
