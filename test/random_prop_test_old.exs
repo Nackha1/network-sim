@@ -1,3 +1,4 @@
+@moduledoc false
 defmodule RandomPropTest do
   use ExUnit.Case, async: false
   use ExUnitProperties

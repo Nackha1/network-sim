@@ -221,8 +221,8 @@ defmodule NetworkSim do
       {u, v, attrs}, acc when u != v and is_map(attrs) ->
         Map.put(acc, undirected(u, v), attrs)
 
-      {_u, _v}, acc ->
-        acc
+      {u, v}, acc when u != v ->
+        Map.put(acc, undirected(u, v), %{})
 
       _self, acc ->
         acc

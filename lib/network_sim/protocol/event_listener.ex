@@ -8,7 +8,7 @@ defmodule NetworkSim.Protocol.EventListener do
   @impl true
   def handle_message(from, {:router_link_down, neighbor, meta}, state) do
     Logger.debug(
-      "PROTOCOL: received link_down event from=#{inspect(from)} neighbor=#{inspect(neighbor)} meta=#{inspect(meta)}"
+      "Received link_down event from=#{inspect(from)} neighbor=#{inspect(neighbor)} meta=#{inspect(meta)}"
     )
 
     {:noreply, state}
@@ -17,7 +17,7 @@ defmodule NetworkSim.Protocol.EventListener do
   @impl true
   def handle_message(from, {:router_link_up, neighbor, meta}, state) do
     Logger.debug(
-      "PROTOCOL: received link_up event from=#{inspect(from)} neighbor=#{inspect(neighbor)} meta=#{inspect(meta)}"
+      "Received link_up event from=#{inspect(from)} neighbor=#{inspect(neighbor)} meta=#{inspect(meta)}"
     )
 
     {:noreply, state}

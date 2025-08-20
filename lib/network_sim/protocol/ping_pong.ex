@@ -7,7 +7,7 @@ defmodule NetworkSim.Protocol.PingPong do
 
   @impl true
   def handle_message(from, {:ping, ref}, state) do
-    Logger.debug("PROTOCOL: received ping from=#{inspect(from)} ref=#{inspect(ref)}")
+    Logger.debug("Received ping from=#{inspect(from)} ref=#{inspect(ref)}")
     {:reply, {:pong, ref}, state}
   end
 

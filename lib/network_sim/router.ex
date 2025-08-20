@@ -59,7 +59,7 @@ defmodule NetworkSim.Router do
   def nodes(), do: GenServer.call(__MODULE__, {:nodes})
 
   @doc """
-  Get the current node IDs.
+  Get the current node links.
   """
   @spec links() :: [edge_attrs()]
   def links(), do: GenServer.call(__MODULE__, {:links})

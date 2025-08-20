@@ -32,8 +32,6 @@ defmodule NetworkSim.Kruskal do
     sorted =
       Enum.sort_by(links, fn {_u, _v, m} -> weight_of(m) end)
 
-    # you can also remove duplicate undirected edges here if you had both {u,v} and {v,u}
-
     # 2) initialize disjoint-set (Union–Find) structures
     parents = Map.new(nodes, &{&1, &1})
     ranks = Map.new(nodes, &{&1, 0})

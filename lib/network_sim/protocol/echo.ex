@@ -7,7 +7,7 @@ defmodule NetworkSim.Protocol.Echo do
 
   @impl true
   def handle_message(from, {:echo, str}, state) do
-    Logger.debug("PROTOCOL: received echo from=#{inspect(from)} str=#{inspect(str)}")
+    Logger.debug("Received echo from=#{inspect(from)} str=#{inspect(str)}")
     {:reply, {:reply, String.upcase(str)}, state}
   end
 

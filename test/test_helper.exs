@@ -11,7 +11,7 @@ defmodule NetworkSim.TestHelper do
       Router.nodes(),
       Router.links(),
       NetworkSim.get_tree(),
-      "#{test_name}_start"
+      test_name
     )
   end
 
@@ -20,14 +20,10 @@ defmodule NetworkSim.TestHelper do
       Router.nodes(),
       Router.links(),
       NetworkSim.get_tree(),
-      "#{test_name}_end"
+      test_name
     )
 
     NetworkSim.stop_network()
-  end
-
-  def show_custom_mst(nodes, links, test_name) do
-    Dot.show_mst(nodes, links, "tmp/dmst/#{test_name}")
   end
 
   def show_custom_tree(nodes, links, tree, test_name) do

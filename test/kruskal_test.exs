@@ -1,4 +1,4 @@
-defmodule KruskalTest do
+defmodule NetworkSim.KruskalTest do
   use ExUnit.Case, async: true
 
   require Logger

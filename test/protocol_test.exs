@@ -1,5 +1,5 @@
-defmodule ProtocolTest do
-  use ExUnit.Case, async: true
+defmodule NetwrokSim.ProtocolTest do
+  use ExUnit.Case, async: false
 
   require Logger
 
@@ -12,8 +12,8 @@ defmodule ProtocolTest do
     File.mkdir_p("tmp/protocol")
   end
 
-  defp show_custom_mst(nodes, links, test_name) do
-    Dot.show_mst(nodes, links, "tmp/protocol/#{test_name}")
+  def show_custom_graph(nodes, links, test_name) do
+    Dot.show_graph(nodes, links, "tmp/protocol/#{test_name}")
   end
 
   @doc """
@@ -22,7 +22,7 @@ defmodule ProtocolTest do
       |         |
       └—— d ——──┘
   """
-  test "ping_pong protocol test" do
+  test "ping_pong protocol" do
     nodes = [
       {:a, Protocol.PingPong, []},
       {:b, Protocol.PingPong, []},
@@ -31,62 +31,68 @@ defmodule ProtocolTest do
     ]
 
     links = [
-      {:a, :b, %{weight: 1}},
-      {:a, :d, %{weight: 4}},
-      {:b, :c, %{weight: 2}},
-      {:c, :d, %{weight: 3}}
+      {:a, :b},
+      {:a, :d},
+      {:b, :c},
+      {:c, :d}
     ]
 
-    # boot the network (expects your app exposes something like this)
+    # Start the network
     NetworkSim.start_network(nodes, links)
 
-    # initial neighbor checks (Router.neighbors/1 should reflect both directions)
+    # Print the starting graph
+    test_name = "00_ping_pong_start"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
+
+    # Initial neighbor checks (Router.neighbors/1 should reflect both directions)
     assert MapSet.new(Router.neighbors(:a)) == MapSet.new([:b, :d])
     assert MapSet.new(Router.neighbors(:b)) == MapSet.new([:a, :c])
     assert MapSet.new(Router.neighbors(:c)) == MapSet.new([:b, :d])
     assert MapSet.new(Router.neighbors(:d)) == MapSet.new([:a, :c])
 
-    # test link attributes
-    assert NetworkSim.Router.edge_attr(:b, :a) == NetworkSim.Router.edge_attr(:a, :b)
-    assert nil == NetworkSim.Router.edge_attr(:a, :c)
+    # Test link attributes
+    assert Router.edge_attr(:b, :a) == Router.edge_attr(:a, :b)
+    assert nil == Router.edge_attr(:a, :c)
 
-    # test ping_pong protocol
+    # Test ping_pong protocol
     NetworkSim.send(:a, :b, {:ping, 1})
     NetworkSim.send(:a, :b, {:ping, 2})
     NetworkSim.send(:d, :a, {:ping, 3})
     NetworkSim.send(:c, :d, {:ping, 4})
 
-    # wait to see if pong is in inbox
+    # Wait to see if pong is in inbox
     Process.sleep(5)
     assert Enum.member?(NetworkSim.inbox(:a), {:b, {:pong, 1}})
     assert Enum.member?(NetworkSim.inbox(:a), {:b, {:pong, 2}})
     assert Enum.member?(NetworkSim.inbox(:d), {:a, {:pong, 3}})
     assert Enum.member?(NetworkSim.inbox(:c), {:d, {:pong, 4}})
 
-    # disable a link and verify both sides see the change
-    Router.disable_link(:b, :c)
+    # Disable a link and verify both sides see the change
+    NetworkSim.disable_link(:b, :c)
 
     assert {:error, :link_disabled} == NetworkSim.send(:b, :c, {:ping, 5})
     assert {:error, :link_disabled} == NetworkSim.send(:c, :b, {:ping, 5})
 
-    # enable it back
-    Router.enable_link(:b, :c)
+    # Enable it back
+    NetworkSim.enable_link(:b, :c)
 
     assert :ok == NetworkSim.send(:c, :b, {:ping, 6})
 
+    # Wait to see if pong is in inbox
     Process.sleep(5)
     assert Enum.member?(NetworkSim.inbox(:c), {:b, {:pong, 6}})
 
     assert {:error, :not_neighbors} == NetworkSim.send(:a, :c, {:ping, 7})
 
-    test_name = "graph_1"
-    new_nodes = Enum.map(nodes, &elem(&1, 0))
-    show_custom_mst(new_nodes, links, test_name)
+    # Print the ending graph
+    test_name = "01_ping_pong_end"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
 
+    # Stop the network
     NetworkSim.stop_network()
   end
 
-  test "echo protocol test" do
+  test "echo protocol" do
     nodes = [
       {:a, Protocol.Echo, []},
       {:b, Protocol.Echo, []}
@@ -98,15 +104,21 @@ defmodule ProtocolTest do
 
     NetworkSim.start_network(nodes, links)
 
+    test_name = "01_echo_start"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
+
     NetworkSim.send(:a, :b, {:echo, "Hello, World!"})
 
     Process.sleep(10)
     assert Enum.member?(NetworkSim.inbox(:a), {:b, {:reply, "HELLO, WORLD!"}})
 
+    test_name = "01_echo_end"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
+
     NetworkSim.stop_network()
   end
 
-  test "event_listener protocol test" do
+  test "event_listener protocol" do
     nodes = [
       {:a, Protocol.EventListener, []},
       {:b, Protocol.EventListener, []},
@@ -120,6 +132,9 @@ defmodule ProtocolTest do
     ]
 
     NetworkSim.start_network(nodes, links)
+
+    test_name = "02_event_listener_start"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
 
     NetworkSim.disable_link(:a, :b)
 
@@ -140,7 +155,9 @@ defmodule ProtocolTest do
     NetworkSim.disable_link(:a, :b)
     NetworkSim.enable_link(:a, :b)
 
-    Process.sleep(10)
+    Process.sleep(5)
+    test_name = "02_event_listener_end"
+    show_custom_graph(Router.nodes(), Router.links(), test_name)
     NetworkSim.stop_network()
   end
 end
