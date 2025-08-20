@@ -1,31 +1,79 @@
 defmodule NetworkSim.Kruskal do
   @moduledoc """
-  Minimum Spanning Tree using Kruskal's algorithm for an undirected graph.
+  # NetworkSim.Kruskal
+
+  Minimum Spanning Tree (MST) using **Kruskal’s algorithm** for an undirected graph.
+
+  Kruskal’s algorithm sorts all edges by weight (ascending) and scans them,
+  adding an edge iff it connects two **different** components. Components are
+  tracked with a **Disjoint-Set / Union–Find** structure (with union by rank
+  and path compression).
 
   ## Graph shape
 
-      nodes :: [node]
-      links :: [{node, node, %{weight: number}}]
+      nodes :: [node_id]
+      links :: [{node_id, node_id, %{weight: number}}]
 
-  An *edge* is `{u, v, %{weight: w}}`. The graph is undirected, so `{u, v, ...}`
-  and `{v, u, ...}` are the same edge.
+  An edge is `{u, v, %{weight: w}}`. The graph is undirected, so `{u, v, ...}`
+  and `{v, u, ...}` denote the same undirected edge.
 
   ## Return shape
 
       %{
-        edges: [{node, node, %{weight: number}}],
-        weight: number
+        edges: [{node_id, node_id, %{weight: number}}],
+        weight: number | :infinity
       }
 
-  If the graph is disconnected, the result is a *minimum spanning forest*.
+  If the graph is **disconnected**, the result is a *minimum spanning forest*
+  (one MST per connected component). If any chosen edge has a missing weight
+  (treated as `:infinity`), the total `weight` is reported as `:infinity`.
   """
 
+  # ================
+  #  Types
+  # ================
+  @typedoc "Scalar weight for an edge."
   @type weight :: number()
-  @type meta :: %{optional(atom()) => term()}
-  @type edge :: {term(), term(), meta()}
-  @type mst :: %{edges: [edge()], weight: weight()}
 
-  @spec kruskal([node()], [edge()]) :: mst()
+  @typedoc "Arbitrary edge metadata; `:weight` is expected when present."
+  @type meta :: %{optional(atom()) => term()}
+
+  @typedoc "Undirected, attributed edge."
+  @type edge :: {node_id(), node_id(), meta()}
+
+  @typedoc "Node identifier (opaque)."
+  @type node_id :: term()
+
+  @typedoc "MST (or forest) result."
+  @type mst :: %{edges: [edge()], weight: weight() | :infinity}
+
+  @typedoc """
+  Per-node tree info for a rooted forest: `parent` is `nil` at the root,
+  `children` are ordered from oldest-to-newest discovery in BFS.
+  """
+  @type rooted_info :: %{optional(node_id()) => %{parent: node_id() | nil, children: [node_id()]}}
+
+  # ================
+  #  Public API
+  # ================
+
+  @doc """
+  Compute a Minimum Spanning Tree (or forest) using Kruskal’s algorithm.
+
+  - Edges are sorted ascending by `:weight`.
+  - Edges **without** a `:weight` are treated as having weight **`:+∞`** (i.e. `:infinity`).
+  - If the graph is disconnected, the result contains one tree per component.
+  - The final `weight` is the sum of chosen edge weights, or `:infinity` if any
+    chosen edge is missing a numeric weight.
+
+  ## Parameters
+  - `nodes` — list of node identifiers
+  - `links` — list of edges `{u, v, %{weight: w}}` (additional metadata allowed)
+
+  ## Returns
+  - `%{edges: [edge], weight: number | :infinity}`
+  """
+  @spec kruskal([node_id()], [edge()]) :: mst()
   def kruskal(nodes, links) when is_list(nodes) and is_list(links) do
     # 1) sort all edges by weight (ascending)
     #    (edges with missing weights are treated as +infinity)
@@ -64,13 +112,17 @@ defmodule NetworkSim.Kruskal do
     }
   end
 
-  # === Root a forest randomly from MST edges =================================
-
-  @type rooted_info :: %{optional(term()) => %{parent: term() | nil, children: [term()]}}
-
   @doc """
-  Produce a *randomly rooted* forest from MST edges.
-  Only nodes present in `edges` are included.
+  Produce a **randomly rooted** forest from MST edges.
+
+  Only nodes that appear in `edges` are included. For each connected component, a
+  root is chosen uniformly with `Enum.random/1`, and a BFS assigns `parent/children`.
+
+  ## Parameters
+  - `edges` — MST edges as returned by `kruskal/2`
+
+  ## Returns
+  - `%{node_id => %{parent: node_id | nil, children: [node_id]}}`
   """
   @spec rooted_forest([edge()]) :: rooted_info
   def rooted_forest(edges) do
@@ -83,8 +135,15 @@ defmodule NetworkSim.Kruskal do
   end
 
   @doc """
-  Produce a *randomly rooted* forest from MST edges, ensuring `nodes` are included
-  (so isolated nodes become singleton trees with `parent: nil`).
+  Produce a **randomly rooted** forest from MST edges, ensuring a given superset
+  of `nodes` is included (isolated nodes become singleton trees with `parent: nil`).
+
+  ## Parameters
+  - `edges` — MST edges
+  - `nodes` — nodes to include even if isolated
+
+  ## Returns
+  - `%{node_id => %{parent: node_id | nil, children: [node_id]}}`
   """
   @spec rooted_forest([edge()], [term()]) :: rooted_info
   def rooted_forest(edges, nodes) when is_list(edges) and is_list(nodes) do
@@ -116,7 +175,9 @@ defmodule NetworkSim.Kruskal do
     end)
   end
 
-  # -- Helpers: components & BFS ----------------------------------------------
+  # ================
+  #  Helpers
+  # ================
 
   defp collect_component(start, adj, visited) do
     queue = :queue.from_list([start])
@@ -182,14 +243,10 @@ defmodule NetworkSim.Kruskal do
     end
   end
 
-  # -- Kruskal helpers ---------------------------------------------------------
-
   @spec weight_of(meta()) :: weight()
   defp weight_of(m) do
     Map.get(m, :weight, :infinity)
   end
-
-  # Disjoint-set: `ds` is {parents_map, ranks_map}
 
   @spec find(term(), {map(), map()}) :: {term(), {map(), map()}}
   defp find(x, {parents, ranks}) do

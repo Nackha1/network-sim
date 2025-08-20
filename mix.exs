@@ -4,10 +4,14 @@ defmodule NetworkSim.MixProject do
   def project do
     [
       app: :network_sim,
-      version: "0.1.0",
+      version: "1.0.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+
+      # Docs
+      name: "Network Simulator",
+      docs: docs()
     ]
   end
 
@@ -22,7 +26,23 @@ defmodule NetworkSim.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:stream_data, "~> 1.0", only: :test}
+      # For documentation generation
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false, warn_if_outdated: true}
+      # {:stream_data, "~> 1.0", only: :test}
+    ]
+  end
+
+  # Run "mix help docs" to learn about ExDoc.
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"],
+      authors: ["Nazareno Piccin"],
+      nest_modules_by_prefix: [
+        "NetworkSim",
+        "NetworkSim.Protocol"
+      ],
+      source_url: "https://github.com/Nackha1/network-sim/"
     ]
   end
 end
